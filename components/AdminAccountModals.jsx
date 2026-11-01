@@ -1080,6 +1080,9 @@ export function RemoveAccountModal({
   }, [isOpen, submitting, onClose]);
 
   // Load eligibility pre-check when opened
+  const targetAccountId = account?.id || account?.userId || account?.user_id;
+  const targetRole = role || account?.role || 'customer';
+
   useEffect(() => {
     if (!isOpen || !account) return;
     setReason('');
@@ -1088,15 +1091,39 @@ export function RemoveAccountModal({
     setPrecheck(null);
 
     const loadPrecheck = async () => {
+      if (!targetAccountId) {
+        setError('Invalid account reference. Please close this dialog and select the account again.');
+        return;
+      }
+
       setPrecheckLoading(true);
       try {
         const endpoint =
-          role === 'customer'
-            ? `/api/admin/customers/${account.id}`
-            : `/api/admin/providers/${account.id}`;
+          targetRole === 'customer'
+            ? `/api/admin/customers/${encodeURIComponent(targetAccountId)}`
+            : targetRole === 'provider'
+            ? `/api/admin/providers/${encodeURIComponent(targetAccountId)}`
+            : `/api/admin/users/${encodeURIComponent(targetAccountId)}`;
+
         const res = await fetch(endpoint, {
           headers: { Authorization: `Bearer ${token}` }
         });
+
+        if (res.status === 401) {
+          setError('Your administrator session has expired. Please log in again.');
+          return;
+        }
+        if (res.status === 403) {
+          const errData = await res.json().catch(() => ({}));
+          setError(errData.error || 'You do not have permission to inspect this account.');
+          return;
+        }
+        if (res.status === 404) {
+          setError('This account was not found in the system. The screen data may be stale.');
+          if (onSuccess) onSuccess('Account not found (list refreshed).');
+          return;
+        }
+
         if (res.ok) {
           const data = await res.json();
           setPrecheck(
@@ -1108,7 +1135,8 @@ export function RemoveAccountModal({
             }
           );
         } else {
-          setError('Unable to verify account eligibility. Please try again.');
+          const errData = await res.json().catch(() => ({}));
+          setError(errData.error || 'Unable to verify account eligibility. Please try again.');
         }
       } catch (err) {
         console.error('Error loading removal precheck:', err);
@@ -1119,7 +1147,7 @@ export function RemoveAccountModal({
     };
 
     loadPrecheck();
-  }, [isOpen, account, role, token]);
+  }, [isOpen, account, targetAccountId, targetRole, token]);
 
   if (!isOpen || !account) return null;
 
@@ -1128,13 +1156,18 @@ export function RemoveAccountModal({
   const subscription = precheck?.subscription || null;
   const hasBlockers = activeBookings.length > 0 || pendingRefunds.length > 0;
   const providerRegistrationId =
-    role === 'provider'
+    targetRole === 'provider'
       ? account.confirmation_id || account.confirmationId || 'Pending'
       : null;
 
   const handleRemove = async (e) => {
     e.preventDefault();
     if (submitting || precheckLoading) return;
+
+    if (!targetAccountId) {
+      setError('Invalid account reference.');
+      return;
+    }
 
     if (hasBlockers) {
       setError('Please resolve all active bookings and pending refunds before removing this account.');
@@ -1156,9 +1189,11 @@ export function RemoveAccountModal({
 
     try {
       const endpoint =
-        role === 'customer'
-          ? `/api/admin/customers/${account.id}`
-          : `/api/admin/providers/${account.id}`;
+        targetRole === 'customer'
+          ? `/api/admin/customers/${encodeURIComponent(targetAccountId)}`
+          : targetRole === 'provider'
+          ? `/api/admin/providers/${encodeURIComponent(targetAccountId)}`
+          : `/api/admin/users/${encodeURIComponent(targetAccountId)}`;
 
       const res = await fetch(endpoint, {
         method: 'DELETE',
@@ -1173,6 +1208,17 @@ export function RemoveAccountModal({
       });
 
       const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        setError('Your administrator session has expired. Please log in again.');
+        return;
+      }
+      if (res.status === 404) {
+        setError('This account no longer exists in the system. The list has been refreshed.');
+        if (onSuccess) onSuccess('Account no longer exists (list refreshed).');
+        return;
+      }
+
       if (!res.ok) {
         if (Array.isArray(data.activeBookings) || Array.isArray(data.pendingRefunds)) {
           setPrecheck((prev) => ({
@@ -1184,7 +1230,9 @@ export function RemoveAccountModal({
         }
         setError(data.error || 'Failed to remove account. Please try again.');
       } else {
-        onSuccess();
+        if (onSuccess) {
+          onSuccess(data.message || (data.alreadyRemoved ? 'Account already removed.' : 'Account removed successfully.'));
+        }
         onClose();
       }
     } catch (err) {

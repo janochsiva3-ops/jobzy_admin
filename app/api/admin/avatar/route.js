@@ -44,6 +44,16 @@ function detectImageFormat(buffer) {
 
 function deleteExistingAvatarFile(avatarUrl) {
   if (!avatarUrl || typeof avatarUrl !== 'string') return;
+  // Never delete shared default images or external CDN assets
+  if (
+    avatarUrl.startsWith('http://') ||
+    avatarUrl.startsWith('https://') ||
+    avatarUrl.startsWith('/images/') ||
+    avatarUrl.startsWith('/favicon') ||
+    avatarUrl.startsWith('/icons')
+  ) {
+    return;
+  }
   const prefixes = ['/api/uploads/avatars/', '/uploads/avatars/'];
   for (const prefix of prefixes) {
     if (avatarUrl.startsWith(prefix)) {
@@ -169,9 +179,13 @@ export async function POST(request) {
     }
 
     const db = getDb();
-    const currentAdmin = db
+    let currentAdmin = db
       .prepare("SELECT id, name, email, role, avatar FROM users WHERE id = ? AND role = 'admin'")
       .get(auth.user.id);
+
+    if (!currentAdmin && auth.user.email) {
+      currentAdmin = db.prepare("SELECT id, name, email, role, avatar FROM users WHERE lower(trim(email)) = lower(trim(?)) AND role = 'admin'").get(auth.user.email);
+    }
 
     if (!currentAdmin) {
       return NextResponse.json({ error: 'Administrator account not found.' }, { status: 404 });
@@ -249,20 +263,35 @@ export async function DELETE(request) {
     }
 
     const db = getDb();
-    const currentAdmin = db
+    let currentAdmin = db
       .prepare("SELECT id, name, email, role, avatar FROM users WHERE id = ? AND role = 'admin'")
       .get(auth.user.id);
+
+    if (!currentAdmin && auth.user.email) {
+      currentAdmin = db.prepare("SELECT id, name, email, role, avatar FROM users WHERE lower(trim(email)) = lower(trim(?)) AND role = 'admin'").get(auth.user.email);
+    }
 
     if (!currentAdmin) {
       return NextResponse.json({ error: 'Administrator account not found.' }, { status: 404 });
     }
 
-    // Set avatar to NULL (keep name, role badge, and all other account details unchanged)
-    db.prepare("UPDATE users SET avatar = NULL WHERE id = ? AND role = 'admin'").run(auth.user.id);
-
-    if (currentAdmin.avatar) {
-      deleteExistingAvatarFile(currentAdmin.avatar);
+    // If picture is already removed, return a successful result
+    if (!currentAdmin.avatar) {
+      return NextResponse.json({
+        success: true,
+        alreadyRemoved: true,
+        message: 'Profile picture is already removed.',
+        avatarUrl: null,
+        user: { ...currentAdmin, avatar: null }
+      });
     }
+
+    const oldAvatar = currentAdmin.avatar;
+
+    // Set avatar to NULL (keep name, role badge, and all other account details unchanged)
+    db.prepare("UPDATE users SET avatar = NULL WHERE id = ?").run(currentAdmin.id);
+
+    deleteExistingAvatarFile(oldAvatar);
 
     logAccountAction({
       targetUserId: auth.user.id,

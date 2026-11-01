@@ -34,8 +34,8 @@ export async function GET(request, { params }) {
     LEFT JOIN categories c ON p.category_id = c.id
     LEFT JOIN users admin ON p.reviewed_by = admin.id
     LEFT JOIN users susp_admin ON u.manual_suspended_by = susp_admin.id
-    WHERE u.id = ? AND u.role = 'provider'
-  `).get(id);
+    WHERE (u.id = ? OR p.confirmation_id = ? OR lower(trim(u.email)) = lower(trim(?))) AND u.role = 'provider'
+  `).get(id, id, id);
 
   if (!provider) {
     return NextResponse.json({ error: 'Provider not found.' }, { status: 404 });
@@ -43,7 +43,7 @@ export async function GET(request, { params }) {
 
   const subscription = db.prepare(`
     SELECT * FROM provider_subscriptions WHERE provider_id = ?
-  `).get(id);
+  `).get(provider.id);
 
   const bookings = db.prepare(`
     SELECT 
@@ -498,16 +498,32 @@ export async function DELETE(request, { params }) {
     }
 
     const db = getDb();
-    const provider = db.prepare(`
+    let provider = db.prepare(`
       SELECT u.*, p.confirmation_id
       FROM users u
-      JOIN provider_profiles p ON u.id = p.id
-      WHERE u.id = ? AND u.role = 'provider'
-    `).get(id);
+      LEFT JOIN provider_profiles p ON u.id = p.id
+      WHERE (u.id = ? OR p.confirmation_id = ? OR lower(trim(u.email)) = lower(trim(?))) AND u.role = 'provider'
+    `).get(id, id, id);
 
     if (!provider) {
       return NextResponse.json({ error: 'Provider account not found.' }, { status: 404 });
     }
+
+    if (provider.id === auth.user.id) {
+      return NextResponse.json({ error: 'Administrators cannot remove their own account.' }, { status: 403 });
+    }
+
+    // Return clear result if already removed
+    if (provider.status === 'removed') {
+      return NextResponse.json({
+        success: true,
+        alreadyRemoved: true,
+        message: `Provider account "${provider.name}" has already been removed.`,
+        provider
+      });
+    }
+
+    const providerId = provider.id;
 
     // 1. Check active bookings
     const activeBookings = db.prepare(`
@@ -515,7 +531,7 @@ export async function DELETE(request, { params }) {
       FROM bookings
       WHERE provider_id = ?
         AND status IN ('awaiting_payment', 'pending', 'awaiting_quote_approval', 'confirmed', 'in_progress', 'awaiting_completion')
-    `).all(id);
+    `).all(providerId);
 
     // 2. Check pending refunds on bookings assigned to this provider
     const pendingRefunds = db.prepare(`
@@ -524,7 +540,7 @@ export async function DELETE(request, { params }) {
       WHERE provider_id = ?
         AND status IN ('declined', 'cancelled')
         AND booking_fee_status = 'paid'
-    `).all(id);
+    `).all(providerId);
 
     if (activeBookings.length > 0 || pendingRefunds.length > 0) {
       return NextResponse.json({
@@ -535,7 +551,7 @@ export async function DELETE(request, { params }) {
     }
 
     // 3. Cancel future automatic subscription charges through the payment gateway
-    const subscription = db.prepare('SELECT * FROM provider_subscriptions WHERE provider_id = ?').get(id);
+    const subscription = db.prepare('SELECT * FROM provider_subscriptions WHERE provider_id = ?').get(providerId);
     if (subscription && (subscription.status === 'active' || subscription.auto_renew === 1)) {
       if (simulateGatewayCancelError) {
         return NextResponse.json({
@@ -555,7 +571,7 @@ export async function DELETE(request, { params }) {
               cancelled_at = ?,
               updated_at = ?
           WHERE provider_id = ?
-        `).run(now, now, id);
+        `).run(now, now, providerId);
       }
 
       // Cancel any pending checkout transactions
@@ -563,7 +579,7 @@ export async function DELETE(request, { params }) {
         UPDATE transactions
         SET status = 'failed', updated_at = ?
         WHERE user_id = ? AND status = 'pending'
-      `).run(now, id);
+      `).run(now, providerId);
 
       // Recoverable removal: disable login, revoke sessions, hide provider profile
       db.prepare(`
@@ -574,11 +590,11 @@ export async function DELETE(request, { params }) {
             removed_by = ?,
             token_version = COALESCE(token_version, 1) + 1
         WHERE id = ?
-      `).run(reason.trim(), now, auth.user.id, id);
+      `).run(reason.trim(), now, auth.user.id, providerId);
     })();
 
     logAccountAction({
-      targetUserId: id,
+      targetUserId: providerId,
       targetUserName: provider.name,
       targetUserEmail: provider.email,
       targetUserRole: 'provider',
@@ -593,7 +609,7 @@ export async function DELETE(request, { params }) {
     });
 
     createNotification(
-      id,
+      providerId,
       'account',
       'Provider Account Removed',
       'Your Jobzy service provider account has been deactivated and removed from public listings. Any recurring subscription billing has been cancelled, and your historical booking and payment receipts remain preserved.',

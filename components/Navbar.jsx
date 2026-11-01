@@ -10,6 +10,7 @@ import {
   RemoveAdminAvatarModal,
   hasCustomAdminAvatar
 } from '@/components/AdminAvatarModal';
+import UserAvatarCircle from '@/components/UserAvatarCircle';
 import {
   Wrench, Bell, LogOut, LayoutDashboard,
   Menu, X, ShieldCheck, ChevronDown, Check, Globe, Camera, Trash2
@@ -345,15 +346,7 @@ export default function Navbar() {
                     cursor: 'pointer'
                   }}
                 >
-                  {user.role === 'admin' ? (
-                    <AdminAvatarCircle user={user} size={28} />
-                  ) : (
-                    <img
-                      src={user.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100'}
-                      alt={user.name}
-                      style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover' }}
-                    />
-                  )}
+                  <UserAvatarCircle user={user} size={28} />
                   <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#142D4E', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {user.name.split(' ')[0]}
                   </span>

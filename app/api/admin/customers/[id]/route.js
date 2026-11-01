@@ -10,13 +10,13 @@ export async function GET(request, { params }) {
   }
 
   const db = getDb();
-  const customer = db.prepare(`
+  let customer = db.prepare(`
     SELECT id, name, email, phone, district, city, address, avatar, status, created_at,
            suspension_reason, suspended_at, removal_reason, removed_at, restored_at,
            invitation_token, invitation_accepted_at
     FROM users
-    WHERE id = ? AND role = 'customer'
-  `).get(id);
+    WHERE (id = ? OR lower(trim(email)) = lower(trim(?))) AND role = 'customer'
+  `).get(id, id);
 
   if (!customer) {
     return NextResponse.json({ error: 'Customer not found.' }, { status: 404 });
@@ -299,10 +299,29 @@ export async function DELETE(request, { params }) {
     }
 
     const db = getDb();
-    const customer = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'customer'").get(id);
+    let customer = db.prepare("SELECT * FROM users WHERE id = ? AND role = 'customer'").get(id);
+    if (!customer) {
+      customer = db.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?)) AND role = 'customer'").get(id);
+    }
     if (!customer) {
       return NextResponse.json({ error: 'Customer account not found.' }, { status: 404 });
     }
+
+    if (customer.id === auth.user.id) {
+      return NextResponse.json({ error: 'Administrators cannot remove their own account.' }, { status: 403 });
+    }
+
+    // Return clear result if already removed
+    if (customer.status === 'removed') {
+      return NextResponse.json({
+        success: true,
+        alreadyRemoved: true,
+        message: `Customer account "${customer.name}" has already been removed.`,
+        customer
+      });
+    }
+
+    const customerId = customer.id;
 
     // Check active bookings
     const activeBookings = db.prepare(`
@@ -310,7 +329,7 @@ export async function DELETE(request, { params }) {
       FROM bookings
       WHERE customer_id = ?
         AND status IN ('awaiting_payment', 'pending', 'awaiting_quote_approval', 'confirmed', 'in_progress', 'awaiting_completion')
-    `).all(id);
+    `).all(customerId);
 
     // Check pending refunds (declined/cancelled bookings with paid booking fee not yet refunded)
     const pendingRefunds = db.prepare(`
@@ -319,7 +338,7 @@ export async function DELETE(request, { params }) {
       WHERE customer_id = ?
         AND status IN ('declined', 'cancelled')
         AND booking_fee_status = 'paid'
-    `).all(id);
+    `).all(customerId);
 
     if (activeBookings.length > 0 || pendingRefunds.length > 0) {
       return NextResponse.json({
@@ -337,7 +356,7 @@ export async function DELETE(request, { params }) {
         UPDATE transactions
         SET status = 'failed', updated_at = ?
         WHERE user_id = ? AND status = 'pending'
-      `).run(now, id);
+      `).run(now, customerId);
 
       // Recoverable removal: disable login, revoke sessions, preserve bookings/payments/receipts
       db.prepare(`
@@ -348,11 +367,11 @@ export async function DELETE(request, { params }) {
             removed_by = ?,
             token_version = COALESCE(token_version, 1) + 1
         WHERE id = ?
-      `).run(reason.trim(), now, auth.user.id, id);
+      `).run(reason.trim(), now, auth.user.id, customerId);
     })();
 
     logAccountAction({
-      targetUserId: id,
+      targetUserId: customerId,
       targetUserName: customer.name,
       targetUserEmail: customer.email,
       targetUserRole: 'customer',
@@ -363,7 +382,7 @@ export async function DELETE(request, { params }) {
     });
 
     createNotification(
-      id,
+      customerId,
       'account',
       'Account Removed',
       'Your Jobzy account has been deactivated and removed from active service. Historical booking and payment receipts remain preserved in accordance with platform policy.',

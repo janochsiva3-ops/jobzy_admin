@@ -39,6 +39,19 @@ export async function POST(request) {
     }
 
     const db = getDb();
+
+    // Server-side validation for provider category
+    const selectedCategoryId = (categoryId || body.category_id || '').toString().trim();
+    if (role === 'provider') {
+      if (!selectedCategoryId) {
+        return NextResponse.json({ error: 'Please select a valid service category.' }, { status: 400 });
+      }
+      const categoryRecord = db.prepare('SELECT id, name, is_active FROM categories WHERE id = ?').get(selectedCategoryId);
+      if (!categoryRecord || !categoryRecord.is_active) {
+        return NextResponse.json({ error: 'The selected service category is invalid or inactive.' }, { status: 400 });
+      }
+    }
+
     const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email.toLowerCase().trim());
     if (existing) {
       return NextResponse.json({ error: 'An account with this email address already exists.' }, { status: 409 });
@@ -102,12 +115,12 @@ export async function POST(request) {
           `).run(
             userId,
             candidateId,
-            categoryId || 'cat-electrician',
+            selectedCategoryId,
             title || 'Skilled Professional Service Provider',
             bio || 'Experienced trade professional in Sri Lanka dedicated to quality service.',
-            parseInt(experienceYears, 10) || 1,
-            pricingType || 'hourly',
-            parseFloat(baseRate) || 1500,
+            parseInt(experienceYears ?? body.experience_years, 10) || 1,
+            pricingType || body.pricing_type || 'hourly',
+            parseFloat(baseRate ?? body.base_rate) || 1500,
             pricingDescription || 'Standard transparent rates.',
             JSON.stringify(Array.isArray(serviceDistricts) ? serviceDistricts : [district || 'Colombo']),
             serviceTowns || city || '',
@@ -161,7 +174,12 @@ export async function POST(request) {
 
     const newUser = db.prepare('SELECT id, name, email, role, phone, district, city, address, avatar, status FROM users WHERE id = ?').get(userId);
     if (role === 'provider') {
-      const profile = db.prepare('SELECT * FROM provider_profiles WHERE id = ?').get(userId);
+      const profile = db.prepare(`
+        SELECT p.*, c.name as category_name
+        FROM provider_profiles p
+        LEFT JOIN categories c ON p.category_id = c.id
+        WHERE p.id = ?
+      `).get(userId);
       if (profile) {
         newUser.providerProfile = {
           ...profile,

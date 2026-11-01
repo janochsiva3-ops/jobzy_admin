@@ -547,6 +547,28 @@ textarea.form-control {
   min-height: 90px;
 }
 
+select.form-control {
+  appearance: auto;
+  -webkit-appearance: auto;
+  -moz-appearance: auto;
+  color-scheme: light;
+  background-color: #ffffff;
+  color: #0f172a;
+  cursor: pointer;
+  min-height: 44px;
+}
+
+select.form-control option {
+  background-color: #ffffff;
+  color: #0f172a;
+  font-size: 0.95rem;
+  padding: 0.5rem;
+}
+
+select.form-control option:disabled {
+  color: #94a3b8;
+}
+
 /* ==========================================================================
    HERO SECTION (ORIGINAL - DARK NAVY GRADIENT)
    ========================================================================== */
