@@ -4,7 +4,11 @@ import { verifyAuth } from '@/lib/auth';
 import { evaluateProviderSubscriptions } from '@/lib/paymentService';
 
 export async function GET(request) {
-  evaluateProviderSubscriptions();
+  try {
+    evaluateProviderSubscriptions();
+  } catch (subErr) {
+    console.warn('Subscription evaluation note during me:', subErr?.message);
+  }
   const auth = verifyAuth(request);
   if (auth.error) {
     const errRes = NextResponse.json({ error: auth.error }, { status: auth.status });
