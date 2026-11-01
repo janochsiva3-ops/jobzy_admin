@@ -12,7 +12,11 @@ export async function POST(request) {
     }
 
     const db = getDb();
-    evaluateProviderSubscriptions();
+    try {
+      evaluateProviderSubscriptions();
+    } catch (subErr) {
+      console.warn('Subscription evaluation note during login:', subErr?.message);
+    }
 
     const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase().trim());
     if (!user) {
@@ -91,6 +95,8 @@ export async function POST(request) {
     return response;
   } catch (error) {
     console.error('Login error:', error);
-    return NextResponse.json({ error: 'Server error during login.' }, { status: 500 });
+    return NextResponse.json({
+      error: error?.message || 'Server error during login.'
+    }, { status: 500 });
   }
 }
