@@ -18,7 +18,29 @@ export async function POST(request) {
       console.warn('Subscription evaluation note during login:', subErr?.message);
     }
 
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase().trim());
+    let user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase().trim());
+    if (!user) {
+      try {
+        const { querySupabase } = await import('@/lib/supabase');
+        const res = await querySupabase('SELECT * FROM users WHERE lower(trim(email)) = $1', [email.toLowerCase().trim()]);
+        if (res.rows && res.rows[0]) {
+          const remoteUser = res.rows[0];
+          const validCols = db.pragma('table_info(users)').map(c => c.name);
+          const matchedCols = Object.keys(remoteUser).filter(c => validCols.includes(c));
+          const colList = matchedCols.map(c => `"${c}"`).join(', ');
+          const placeholders = matchedCols.map(() => '?').join(', ');
+          const vals = matchedCols.map(c => {
+            const v = remoteUser[c];
+            if (typeof v === 'object' && v !== null && !(v instanceof Date)) return JSON.stringify(v);
+            return v;
+          });
+          db.prepare(`INSERT OR REPLACE INTO users (${colList}) VALUES (${placeholders})`).run(...vals);
+          user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase().trim());
+        }
+      } catch (e) {
+        console.warn('Supabase fallback lookup note:', e?.message);
+      }
+    }
     if (!user) {
       return NextResponse.json({ error: 'Invalid email or password.' }, { status: 401 });
     }
