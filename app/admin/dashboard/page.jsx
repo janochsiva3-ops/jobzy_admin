@@ -18,7 +18,7 @@ import {
   Search, Eye, Plus, Megaphone, TrendingUp, Bell, Check, 
   X, Clock, MapPin, Briefcase, FileText, ChevronRight, 
   MessageSquare, ArrowRight, AlertTriangle, Filter, ExternalLink,
-  Shield, CheckCheck, UserCheck, UserX, Info, Tag, ShieldAlert, Trash2
+  Shield, CheckCheck, UserCheck, UserX, Info, Tag, ShieldAlert, Trash2, Database
 } from 'lucide-react';
 
 export default function AdminDashboardPage() {
@@ -182,13 +182,21 @@ export default function AdminDashboardPage() {
     }
   }, [user, authLoading, router, pathname]);
 
+  const [syncingSupabase, setSyncingSupabase] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState(null);
+
   // Load all dashboard data
-  const loadAdminData = useCallback(async () => {
+  const loadAdminData = useCallback(async (isManualRefresh = false) => {
     if (!token || user?.role !== 'admin') return;
     setLoading(true);
 
     try {
-      const headers = { Authorization: `Bearer ${token}` };
+      const headers = {
+        Authorization: `Bearer ${token}`,
+        'Cache-Control': 'no-cache'
+      };
+      const refreshParam = isManualRefresh ? '&refresh=1' : '';
+      const refreshSolo = isManualRefresh ? '?refresh=1' : '';
 
       const [
         statsRes,
@@ -201,15 +209,15 @@ export default function AdminDashboardPage() {
         settingsRes,
         promRes
       ] = await Promise.all([
-        fetch('/api/admin/stats', { headers }),
-        fetch(`/api/admin/customers?search=${encodeURIComponent(customerSearch)}&status=${customerStatusFilter}`, { headers }),
-        fetch(`/api/admin/providers?search=${encodeURIComponent(providerSearch)}&verificationStatus=${providerVerifFilter}&status=${providerStatusFilter}`, { headers }),
-        fetch('/api/admin/verifications', { headers }),
-        fetch(`/api/admin/bookings?search=${encodeURIComponent(bookingSearch)}&status=${bookingStatusFilter}&paymentStatus=${bookingPaymentFilter}&date=${bookingDateFilter}`, { headers }),
+        fetch(`/api/admin/stats${refreshSolo}`, { headers }),
+        fetch(`/api/admin/customers?search=${encodeURIComponent(customerSearch)}&status=${customerStatusFilter}${refreshParam}`, { headers }),
+        fetch(`/api/admin/providers?search=${encodeURIComponent(providerSearch)}&verificationStatus=${providerVerifFilter}&status=${providerStatusFilter}${refreshParam}`, { headers }),
+        fetch(`/api/admin/verifications${refreshSolo}`, { headers }),
+        fetch(`/api/admin/bookings?search=${encodeURIComponent(bookingSearch)}&status=${bookingStatusFilter}&paymentStatus=${bookingPaymentFilter}&date=${bookingDateFilter}${refreshParam}`, { headers }),
         fetch('/api/categories'),
-        fetch('/api/admin/reviews', { headers }).catch(() => null),
-        fetch('/api/admin/settings', { headers }).catch(() => null),
-        fetch('/api/admin/promotions', { headers }).catch(() => null)
+        fetch(`/api/admin/reviews${refreshSolo}`, { headers }).catch(() => null),
+        fetch(`/api/admin/settings${refreshSolo}`, { headers }).catch(() => null),
+        fetch(`/api/admin/promotions${refreshSolo}`, { headers }).catch(() => null)
       ]);
 
       // Handle expired/revoked admin session
@@ -253,6 +261,25 @@ export default function AdminDashboardPage() {
     providerSearch, providerVerifFilter, providerStatusFilter, 
     bookingSearch, bookingStatusFilter, bookingPaymentFilter, bookingDateFilter
   ]);
+
+  const handleSyncSupabase = async () => {
+    if (!token || syncingSupabase) return;
+    setSyncingSupabase(true);
+    try {
+      const res = await fetch('/api/admin/supabase/sync', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setLastSyncTime(new Date());
+        await loadAdminData(true);
+      }
+    } catch (e) {
+      console.error('Supabase sync error:', e);
+    } finally {
+      setSyncingSupabase(false);
+    }
+  };
 
   useEffect(() => {
     if (token && user?.role === 'admin') {
@@ -799,9 +826,28 @@ export default function AdminDashboardPage() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', position: 'relative' }}>
+            {/* Supabase Cloud Live Sync Button */}
+            <button
+              onClick={handleSyncSupabase}
+              disabled={syncingSupabase}
+              className="btn btn-secondary btn-sm"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                borderColor: '#CBD5E1',
+                background: syncingSupabase ? '#F1F5F9' : '#FFFFFF',
+                color: '#0F766E'
+              }}
+              title="Force pull fresh records directly from Supabase Cloud"
+            >
+              <Database size={14} className={syncingSupabase ? 'spin' : ''} />
+              <span>{syncingSupabase ? 'Syncing Supabase…' : 'Sync Supabase'}</span>
+            </button>
+
             {/* Refresh Button */}
             <button
-              onClick={loadAdminData}
+              onClick={() => loadAdminData(true)}
               className="btn btn-secondary btn-sm"
               style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
               title="Refresh database records"

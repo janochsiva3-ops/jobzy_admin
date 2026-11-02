@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import getDb from '@/lib/db';
 import { requireRole } from '@/lib/auth';
+import { ensureFreshFromSupabase } from '@/lib/supabaseSync';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   const auth = requireRole(request, 'admin');
@@ -8,7 +11,12 @@ export async function GET(request) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
+  const { searchParams } = new URL(request.url);
+  const isRefresh = searchParams.get('refresh') === '1' || searchParams.get('refresh') === 'true';
+
   const db = getDb();
+  await ensureFreshFromSupabase(db, ['advertisements', 'provider_profiles', 'users'], isRefresh ? 0 : 15000);
+
   const ads = db.prepare('SELECT * FROM advertisements ORDER BY created_at DESC').all();
   const sponsoredProviders = db.prepare(`
     SELECT u.id, u.name, p.title, p.is_sponsored, p.sponsored_label, c.name as category_name
@@ -18,7 +26,11 @@ export async function GET(request) {
     WHERE p.is_sponsored = 1
   `).all();
 
-  return NextResponse.json({ ads, sponsoredProviders });
+  return NextResponse.json({ ads, sponsoredProviders }, {
+    headers: {
+      'Cache-Control': 'no-store, no-cache, must-revalidate'
+    }
+  });
 }
 
 export async function POST(request) {

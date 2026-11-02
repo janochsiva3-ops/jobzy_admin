@@ -3,6 +3,9 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import getDb, { createNotification, logAccountAction } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
+import { syncRowToSupabase, ensureFreshFromSupabase } from '@/lib/supabaseSync';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   const auth = requireRole(request, 'admin');
@@ -13,8 +16,10 @@ export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const status = searchParams.get('status');
   const search = searchParams.get('search');
+  const isRefresh = searchParams.get('refresh') === '1' || searchParams.get('refresh') === 'true';
 
   const db = getDb();
+  await ensureFreshFromSupabase(db, ['users', 'bookings'], isRefresh ? 0 : 15000);
   let query = `
     SELECT 
       u.id, u.name, u.email, u.phone, u.district, u.city, u.address, u.avatar, u.status, u.created_at,
@@ -50,7 +55,11 @@ export async function GET(request) {
 
   const customers = db.prepare(query).all(...params);
 
-  return NextResponse.json(customers);
+  return NextResponse.json(customers, {
+    headers: {
+      'Cache-Control': 'no-store, no-cache, must-revalidate'
+    }
+  });
 }
 
 export async function POST(request) {
@@ -123,6 +132,10 @@ export async function POST(request) {
       auth.user.id,
       now
     );
+
+    try {
+      await syncRowToSupabase(db, 'users', userId);
+    } catch (e) {}
 
     const origin = request.headers.get('origin') || 'http://localhost:3000';
     const invitationUrl = `${origin}/accept-invitation?token=${invitationToken}`;

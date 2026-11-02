@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import getDb, { createNotification, generateConfirmationId } from '@/lib/db';
 import { generateToken } from '@/lib/auth';
 import { getFeeSetting } from '@/lib/paymentService';
+import { syncRowToSupabase } from '@/lib/supabaseSync';
 
 export async function POST(request) {
   try {
@@ -170,6 +171,16 @@ export async function POST(request) {
           '/admin/dashboard'
         );
       }
+    }
+
+    // Guarantee that newly registered user & provider_profile are persisted in Supabase immediately
+    try {
+      await syncRowToSupabase(db, 'users', userId);
+      if (role === 'provider') {
+        await syncRowToSupabase(db, 'provider_profiles', userId);
+      }
+    } catch (syncErr) {
+      console.warn('[Register] Immediate Supabase sync note:', syncErr?.message);
     }
 
     const newUser = db.prepare('SELECT id, name, email, role, phone, district, city, address, avatar, status FROM users WHERE id = ?').get(userId);

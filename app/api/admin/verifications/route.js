@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import getDb from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { evaluateProviderSubscriptions } from '@/lib/paymentService';
+import { ensureFreshFromSupabase } from '@/lib/supabaseSync';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   const auth = requireRole(request, 'admin');
@@ -13,8 +16,10 @@ export async function GET(request) {
 
   const { searchParams } = new URL(request.url);
   const statusFilter = searchParams.get('status'); // 'pending' | 'all' | etc.
+  const isRefresh = searchParams.get('refresh') === '1' || searchParams.get('refresh') === 'true';
 
   const db = getDb();
+  await ensureFreshFromSupabase(db, ['users', 'provider_profiles', 'categories', 'transactions', 'provider_subscriptions'], isRefresh ? 0 : 15000);
   let query = `
     SELECT 
       u.id, u.name, u.email, u.phone, u.district, u.city, u.avatar, u.status as user_status,
@@ -61,5 +66,9 @@ export async function GET(request) {
     qualifications: JSON.parse(q.qualifications || '[]')
   }));
 
-  return NextResponse.json(formatted);
+  return NextResponse.json(formatted, {
+    headers: {
+      'Cache-Control': 'no-store, no-cache, must-revalidate'
+    }
+  });
 }

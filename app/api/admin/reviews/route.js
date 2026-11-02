@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import getDb, { updateProviderRating } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
+import { ensureFreshFromSupabase } from '@/lib/supabaseSync';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   const auth = requireRole(request, 'admin');
@@ -8,7 +11,12 @@ export async function GET(request) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
+  const { searchParams } = new URL(request.url);
+  const isRefresh = searchParams.get('refresh') === '1' || searchParams.get('refresh') === 'true';
+
   const db = getDb();
+  await ensureFreshFromSupabase(db, ['reviews', 'users', 'bookings'], isRefresh ? 0 : 15000);
+
   const reviews = db.prepare(`
     SELECT 
       r.*,
@@ -22,7 +30,11 @@ export async function GET(request) {
     ORDER BY r.created_at DESC
   `).all();
 
-  return NextResponse.json(reviews);
+  return NextResponse.json(reviews, {
+    headers: {
+      'Cache-Control': 'no-store, no-cache, must-revalidate'
+    }
+  });
 }
 
 export async function PUT(request) {

@@ -4,6 +4,9 @@ import crypto from 'crypto';
 import getDb, { createNotification, generateConfirmationId, logAccountAction } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { evaluateProviderSubscriptions } from '@/lib/paymentService';
+import { syncRowToSupabase, ensureFreshFromSupabase } from '@/lib/supabaseSync';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   const auth = requireRole(request, 'admin');
@@ -18,8 +21,10 @@ export async function GET(request) {
   const verificationStatus = searchParams.get('verificationStatus');
   const category = searchParams.get('category');
   const search = searchParams.get('search');
+  const isRefresh = searchParams.get('refresh') === '1' || searchParams.get('refresh') === 'true';
 
   const db = getDb();
+  await ensureFreshFromSupabase(db, ['users', 'provider_profiles', 'categories', 'provider_subscriptions', 'bookings', 'reviews'], isRefresh ? 0 : 15000);
   let query = `
     SELECT 
       u.id, u.name, u.email, u.phone, u.district, u.city, u.address, u.avatar, u.status as user_status, u.created_at,
@@ -94,7 +99,11 @@ export async function GET(request) {
     };
   });
 
-  return NextResponse.json(formatted);
+  return NextResponse.json(formatted, {
+    headers: {
+      'Cache-Control': 'no-store, no-cache, must-revalidate'
+    }
+  });
 }
 
 export async function POST(request) {
@@ -227,6 +236,11 @@ export async function POST(request) {
     });
 
     createProviderTx();
+
+    try {
+      await syncRowToSupabase(db, 'users', userId);
+      await syncRowToSupabase(db, 'provider_profiles', userId);
+    } catch (e) {}
 
     const origin = request.headers.get('origin') || 'http://localhost:3000';
     const invitationUrl = `${origin}/accept-invitation?token=${invitationToken}`;

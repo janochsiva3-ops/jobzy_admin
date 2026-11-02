@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import getDb from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { evaluateProviderSubscriptions } from '@/lib/paymentService';
+import { ensureFreshFromSupabase } from '@/lib/supabaseSync';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   const auth = requireRole(request, 'admin');
@@ -9,9 +12,13 @@ export async function GET(request) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
-  evaluateProviderSubscriptions();
+  const { searchParams } = new URL(request.url);
+  const isRefresh = searchParams.get('refresh') === '1' || searchParams.get('refresh') === 'true';
 
   const db = getDb();
+  await ensureFreshFromSupabase(db, ['users', 'provider_profiles', 'bookings', 'provider_subscriptions', 'transactions'], isRefresh ? 0 : 15000);
+
+  evaluateProviderSubscriptions();
   const customersCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'customer' AND status != 'removed'").get().count;
   const providersCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'provider' AND status != 'removed'").get().count;
   const approvedProvidersCount = db.prepare("SELECT COUNT(*) as count FROM provider_profiles p JOIN users u ON p.id = u.id WHERE p.verification_status = 'approved' AND u.status != 'removed'").get().count;
@@ -60,5 +67,9 @@ export async function GET(request) {
     activeBookingsCount,
     grossVolumeLKR: volumeData.gross_volume || 0,
     recordedCommissionLKR: volumeData.total_commission || 0
+  }, {
+    headers: {
+      'Cache-Control': 'no-store, no-cache, must-revalidate'
+    }
   });
 }

@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import getDb from '@/lib/db';
 import { verifyAuth } from '@/lib/auth';
 import { getFinancialMetrics } from '@/lib/paymentService';
+import { ensureFreshFromSupabase } from '@/lib/supabaseSync';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   const auth = verifyAuth(request);
@@ -18,8 +21,10 @@ export async function GET(request) {
     const page = parseInt(searchParams.get('page') || '1', 10);
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const offset = (page - 1) * limit;
+    const isRefresh = searchParams.get('refresh') === '1' || searchParams.get('refresh') === 'true';
 
     const db = getDb();
+    await ensureFreshFromSupabase(db, ['transactions', 'users', 'bookings'], isRefresh ? 0 : 15000);
     let query = `
       SELECT t.*, u.name as user_full_name, u.email as user_account_email
       FROM transactions t
@@ -68,6 +73,10 @@ export async function GET(request) {
     return NextResponse.json({
       transactions,
       metrics
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate'
+      }
     });
   } catch (err) {
     console.error('Error fetching transactions:', err);

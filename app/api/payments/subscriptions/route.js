@@ -3,6 +3,9 @@ import getDb from '@/lib/db';
 import { verifyAuth, requireRole } from '@/lib/auth';
 import { createPendingTransaction, evaluateProviderSubscriptions, calculateSubscriptionBillingPeriod } from '@/lib/paymentService';
 import { formatSriLankaDateTime } from '@/lib/dateUtils';
+import { ensureFreshFromSupabase } from '@/lib/supabaseSync';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   evaluateProviderSubscriptions();
@@ -11,8 +14,12 @@ export async function GET(request) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
+  const { searchParams } = new URL(request.url);
+  const isRefresh = searchParams.get('refresh') === '1' || searchParams.get('refresh') === 'true';
+
   try {
     const db = getDb();
+    await ensureFreshFromSupabase(db, ['provider_subscriptions', 'users', 'provider_profiles', 'transactions', 'platform_fee_settings'], isRefresh ? 0 : 15000);
 
     if (auth.user.role === 'admin') {
       const subscriptions = db.prepare(`
@@ -36,7 +43,11 @@ export async function GET(request) {
           ps.next_due_date ASC
       `).all();
 
-      return NextResponse.json({ subscriptions });
+      return NextResponse.json({ subscriptions }, {
+        headers: {
+          'Cache-Control': 'no-store, no-cache, must-revalidate'
+        }
+      });
     }
 
     if (auth.user.role === 'provider') {
