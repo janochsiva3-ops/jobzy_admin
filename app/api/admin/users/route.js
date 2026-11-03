@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import getDb, { logAccountAction } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
+import { syncRowToSupabase } from '@/lib/supabaseSync';
 
 export async function GET(request) {
   const auth = requireRole(request, 'admin');
@@ -111,6 +112,12 @@ export async function PUT(request) {
     performedByName: auth.user.name,
     reason: reason || `Updated status to ${status}`
   });
+
+  try {
+    syncRowToSupabase(db, 'users', userId);
+  } catch (syncErr) {
+    console.error('Supabase sync error on user status update:', syncErr);
+  }
 
   return NextResponse.json({ message: `User status updated to ${status}.` });
 }

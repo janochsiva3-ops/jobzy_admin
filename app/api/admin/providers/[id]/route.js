@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import getDb, { createNotification, logAccountAction } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { evaluateProviderSubscriptions } from '@/lib/paymentService';
+import { syncRowToSupabase } from '@/lib/supabaseSync';
 
 export async function GET(request, { params }) {
   const { id } = await params;
@@ -237,6 +238,13 @@ export async function PUT(request, { params }) {
         }
       });
 
+      try {
+        syncRowToSupabase(db, 'users', id);
+        syncRowToSupabase(db, 'provider_profiles', id);
+      } catch (syncErr) {
+        console.error('Supabase sync error on provider edit:', syncErr);
+      }
+
       return NextResponse.json({
         success: true,
         message: 'Service provider details updated.'
@@ -297,6 +305,13 @@ export async function PUT(request, { params }) {
         'Your Jobzy service provider account has been restored. Public listing visibility remains subject to administrator verification and active monthly subscription requirements.',
         '/provider/dashboard'
       );
+
+      try {
+        syncRowToSupabase(db, 'users', id);
+        syncRowToSupabase(db, 'provider_profiles', id);
+      } catch (syncErr) {
+        console.error('Supabase sync error on provider restore:', syncErr);
+      }
 
       return NextResponse.json({
         success: true,
@@ -459,6 +474,13 @@ export async function PUT(request, { params }) {
           '/provider/dashboard'
         );
 
+        try {
+          syncRowToSupabase(db, 'users', id);
+          syncRowToSupabase(db, 'provider_profiles', id);
+        } catch (syncErr) {
+          console.error('Supabase sync error on provider reactivate:', syncErr);
+        }
+
         return NextResponse.json({
           success: true,
           status: 'active',
@@ -466,6 +488,13 @@ export async function PUT(request, { params }) {
           message: `Provider "${provider.name}" has been reactivated.`
         });
       }
+    }
+
+    try {
+      syncRowToSupabase(db, 'users', id);
+      syncRowToSupabase(db, 'provider_profiles', id);
+    } catch (syncErr) {
+      console.error('Supabase sync error on provider update:', syncErr);
     }
 
     return NextResponse.json({ message: 'Provider details updated successfully.' });
@@ -615,6 +644,13 @@ export async function DELETE(request, { params }) {
       'Your Jobzy service provider account has been deactivated and removed from public listings. Any recurring subscription billing has been cancelled, and your historical booking and payment receipts remain preserved.',
       '/contact'
     );
+
+    try {
+      syncRowToSupabase(db, 'users', providerId);
+      syncRowToSupabase(db, 'provider_profiles', providerId);
+    } catch (syncErr) {
+      console.error('Supabase sync error on provider remove:', syncErr);
+    }
 
     return NextResponse.json({
       success: true,

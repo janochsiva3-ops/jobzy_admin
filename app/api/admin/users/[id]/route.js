@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import getDb, { createNotification, logAccountAction } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
+import { syncRowToSupabase } from '@/lib/supabaseSync';
 
 export async function GET(request, { params }) {
   const { id } = await params;
@@ -219,6 +220,12 @@ export async function DELETE(request, { params }) {
       'Your Jobzy account has been deactivated and removed by administration.',
       '/contact'
     );
+
+    try {
+      syncRowToSupabase(db, 'users', targetUserId);
+    } catch (syncErr) {
+      console.error('Supabase sync error on user remove:', syncErr);
+    }
 
     return NextResponse.json({
       success: true,

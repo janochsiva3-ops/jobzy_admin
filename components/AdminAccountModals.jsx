@@ -1784,3 +1784,207 @@ export function RemoveAccountModal({
     </div>
   );
 }
+
+/**
+ * Restore Removed Account Confirmation Dialog
+ */
+export function RestoreAccountModal({
+  open,
+  role = 'customer',
+  account,
+  token,
+  onClose,
+  onSuccess
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [reason, setReason] = useState('Restored by administrator from Removed Accounts list');
+
+  useEffect(() => {
+    if (open) {
+      setError('');
+      setReason('Restored by administrator from Removed Accounts list');
+    }
+  }, [open, account]);
+
+  if (!open || !account) return null;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setError('');
+
+    try {
+      const endpoint =
+        role === 'customer'
+          ? `/api/admin/customers/${account.id}`
+          : `/api/admin/providers/${account.id}`;
+
+      const res = await fetch(endpoint, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          action: 'restore',
+          reason: reason.trim() || 'Restored by administrator from Removed Accounts list'
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Failed to restore account.');
+      } else {
+        if (typeof onSuccess === 'function') {
+          onSuccess(data.message || `Account "${account.name}" has been restored to active status.`);
+        }
+        onClose();
+      }
+    } catch (err) {
+      setError('Network error while restoring account.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundColor: 'rgba(15, 23, 42, 0.7)',
+        backdropFilter: 'blur(3px)',
+        zIndex: 1100,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '16px'
+      }}
+    >
+      <div
+        className="card"
+        style={{
+          width: '100%',
+          maxWidth: '480px',
+          background: '#FFFFFF',
+          borderRadius: '12px',
+          boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
+          overflow: 'hidden'
+        }}
+      >
+        <div
+          style={{
+            padding: '1.25rem 1.5rem',
+            borderBottom: '1px solid #E2E8F0',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <RotateCcw size={20} color="#2563EB" />
+            <h3 style={{ margin: 0, fontSize: '1.15rem', color: '#0F172A', fontWeight: 700 }}>
+              Restore {role === 'provider' ? 'Service Provider' : 'Customer'} Account
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            style={{ background: 'none', border: 'none', color: '#64748B', cursor: 'pointer' }}
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ padding: '1.5rem' }}>
+          {error && (
+            <div
+              style={{
+                background: '#FEF2F2',
+                border: '1px solid #FECACA',
+                borderRadius: '8px',
+                padding: '0.75rem 1rem',
+                marginBottom: '1rem',
+                fontSize: '0.85rem',
+                color: '#991B1B',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}
+            >
+              <AlertTriangle size={16} />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <div
+            style={{
+              background: '#F8FAFC',
+              border: '1px solid #E2E8F0',
+              borderRadius: '8px',
+              padding: '1rem',
+              marginBottom: '1.25rem',
+              fontSize: '0.875rem'
+            }}
+          >
+            <div style={{ marginBottom: '0.35rem' }}>
+              <span style={{ color: '#64748B' }}>Account: </span>
+              <strong style={{ color: '#0F172A' }}>{account.name}</strong> ({account.email})
+            </div>
+            {account.confirmation_id && (
+              <div style={{ marginBottom: '0.35rem' }}>
+                <span style={{ color: '#64748B' }}>Confirmation ID: </span>
+                <strong style={{ fontFamily: 'monospace', color: '#1E40AF' }}>{account.confirmation_id}</strong>
+              </div>
+            )}
+            <div style={{ color: '#475569', marginTop: '0.5rem', fontSize: '0.82rem', lineHeight: 1.4 }}>
+              Restoring will reactivate login access while completely preserving all past bookings, invoices, transactions, and audit records.
+            </div>
+          </div>
+
+          <div className="form-group" style={{ marginBottom: '1.5rem' }}>
+            <label className="form-label" htmlFor="restoreReason" style={{ fontSize: '0.85rem', fontWeight: 600 }}>
+              Administrative Reason (Audit Log)
+            </label>
+            <input
+              id="restoreReason"
+              type="text"
+              className="form-control"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Reason for restoration"
+              required
+            />
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              onClick={onClose}
+              className="btn btn-secondary"
+              disabled={submitting}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={submitting}
+              style={{
+                background: '#2563EB',
+                borderColor: '#2563EB',
+                color: '#FFFFFF'
+              }}
+            >
+              {submitting ? 'Restoring…' : 'Confirm Restore'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}

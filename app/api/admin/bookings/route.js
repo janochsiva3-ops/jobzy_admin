@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import getDb from '@/lib/db';
 import { requireRole } from '@/lib/auth';
-import { ensureFreshFromSupabase } from '@/lib/supabaseSync';
+import { ensureFreshFromSupabase, syncRowToSupabase } from '@/lib/supabaseSync';
 
 export const dynamic = 'force-dynamic';
 
@@ -146,6 +146,12 @@ export async function PUT(request) {
   params.push(bookingId);
 
   db.prepare(`UPDATE bookings SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+
+  try {
+    syncRowToSupabase(db, 'bookings', bookingId);
+  } catch (syncErr) {
+    console.error('Supabase sync error on booking update:', syncErr);
+  }
 
   return NextResponse.json({ message: 'Booking updated successfully.' });
 }

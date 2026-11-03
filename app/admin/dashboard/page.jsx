@@ -8,7 +8,8 @@ import {
   AccountActionsMenu,
   AddEditAccountModal,
   SuspendAccountModal,
-  RemoveAccountModal
+  RemoveAccountModal,
+  RestoreAccountModal
 } from '@/components/AdminAccountModals';
 import { AdminAvatarCircle } from '@/components/AdminAvatarModal';
 import { formatSriLankaDateTime } from '@/lib/dateUtils';
@@ -18,7 +19,8 @@ import {
   Search, Eye, Plus, Megaphone, TrendingUp, Bell, Check, 
   X, Clock, MapPin, Briefcase, FileText, ChevronRight, 
   MessageSquare, ArrowRight, AlertTriangle, Filter, ExternalLink,
-  Shield, CheckCheck, UserCheck, UserX, Info, Tag, ShieldAlert, Trash2, Database
+  Shield, CheckCheck, UserCheck, UserX, Info, Tag, ShieldAlert, Trash2, Database,
+  RotateCcw
 } from 'lucide-react';
 
 export default function AdminDashboardPage() {
@@ -123,10 +125,49 @@ export default function AdminDashboardPage() {
   const [selectedProvider, setSelectedProvider] = useState(null);
   const [providerModalLoading, setProviderModalLoading] = useState(false);
 
-  // Account Management Modals State (Add, Edit, Suspend/Reactivate, Remove)
+  // Account Management Modals State (Add, Edit, Suspend/Reactivate, Remove, Restore)
   const [accountModal, setAccountModal] = useState({ open: false, mode: 'add', role: 'customer', data: null });
   const [suspendModal, setSuspendModal] = useState({ open: false, role: 'customer', account: null });
   const [removeModal, setRemoveModal] = useState({ open: false, role: 'customer', account: null });
+  const [restoreModal, setRestoreModal] = useState({ open: false, role: 'customer', account: null });
+  const [adminToast, setAdminToast] = useState(null);
+
+  const showToast = useCallback((message, type = 'info') => {
+    setAdminToast({ message, type });
+    setTimeout(() => {
+      setAdminToast((prev) => (prev?.message === message ? null : prev));
+    }, 4500);
+  }, []);
+
+  const formatDateTimeSL = useCallback((dateString) => {
+    if (!dateString) return '—';
+    try {
+      return new Date(dateString).toLocaleString('en-GB', {
+        timeZone: 'Asia/Colombo',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch (e) {
+      return String(dateString);
+    }
+  }, []);
+
+  const formatDateSL = useCallback((dateString) => {
+    if (!dateString) return '—';
+    try {
+      return new Date(dateString).toLocaleDateString('en-GB', {
+        timeZone: 'Asia/Colombo',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+    } catch (e) {
+      return String(dateString);
+    }
+  }, []);
 
   // 3. Pending Approvals Tab State
   const [verifications, setVerifications] = useState([]);
@@ -156,10 +197,15 @@ export default function AdminDashboardPage() {
   // 6. Reviews State
   const [reviewsList, setReviewsList] = useState([]);
 
-  // 7. Settings State
+  // 7. Settings & Platform Fees State
   const [commissionRate, setCommissionRate] = useState('0.10');
   const [registrationFee, setRegistrationFee] = useState('2500');
+  const [subscriptionFee, setSubscriptionFee] = useState('1500');
+  const [bookingFee, setBookingFee] = useState('350');
   const [sponsoredFee, setSponsoredFee] = useState('4500');
+  const [feeUpdateReason, setFeeUpdateReason] = useState('Platform settings update');
+  const [feeHistory, setFeeHistory] = useState([]);
+  const [savingSettings, setSavingSettings] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
 
   // 8. Promotions State
@@ -211,7 +257,8 @@ export default function AdminDashboardPage() {
         catsRes,
         reviewsRes,
         settingsRes,
-        promRes
+        promRes,
+        feesRes
       ] = await Promise.all([
         fetch(`/api/admin/stats${refreshSolo}`, { headers }),
         fetch(`/api/admin/customers?search=${encodeURIComponent(customerSearch)}&status=${customerStatusFilter}${refreshParam}`, { headers }),
@@ -221,7 +268,8 @@ export default function AdminDashboardPage() {
         fetch('/api/categories'),
         fetch(`/api/admin/reviews${refreshSolo}`, { headers }).catch(() => null),
         fetch(`/api/admin/settings${refreshSolo}`, { headers }).catch(() => null),
-        fetch(`/api/admin/promotions${refreshSolo}`, { headers }).catch(() => null)
+        fetch(`/api/admin/promotions${refreshSolo}`, { headers }).catch(() => null),
+        fetch('/api/payments/fees', { headers }).catch(() => null)
       ]);
 
       // Handle expired/revoked admin session
@@ -247,9 +295,20 @@ export default function AdminDashboardPage() {
         const s = await settingsRes.json();
         if (s.settings) {
           setCommissionRate(s.settings.platform_commission_rate || '0.10');
-          setRegistrationFee(s.settings.provider_registration_fee || '2500');
           setSponsoredFee(s.settings.sponsored_listing_fee_monthly || '4500');
         }
+      }
+
+      if (feesRes && feesRes.ok) {
+        const fData = await feesRes.json();
+        const fList = fData.fees || [];
+        const regF = fList.find(f => f.fee_type === 'provider_registration');
+        const subF = fList.find(f => f.fee_type === 'provider_subscription');
+        const bookF = fList.find(f => f.fee_type === 'customer_booking');
+        if (regF) setRegistrationFee(String(regF.amount));
+        if (subF) setSubscriptionFee(String(subF.amount));
+        if (bookF) setBookingFee(String(bookF.amount));
+        if (fData.history) setFeeHistory(fData.history);
       }
 
       if (promRes && promRes.ok) {
@@ -407,14 +466,25 @@ export default function AdminDashboardPage() {
     if (!n.is_read) {
       markNotificationRead(n.id);
     }
+    const fullText = `${n.title || ''} ${n.message || ''}`;
     const titleLower = (n.title || '').toLowerCase();
     const linkStr = n.link || '';
-    if (linkStr.includes('tab=payments') || n.type === 'payment' || n.type === 'subscription') {
+
+    // Check for specific references in notification
+    const bookingMatch = fullText.match(/#?(BK-[A-Z0-9-]+)/i);
+    const providerMatch = fullText.match(/(JZ-SP-[A-Z0-9-]+)/i);
+    const txnMatch = fullText.match(/(TXN-[A-Z0-9-]+)/i);
+
+    if (linkStr.includes('tab=payments') || n.type === 'payment' || n.type === 'subscription' || txnMatch) {
       setActiveTab('payments');
-    } else if (linkStr.includes('tab=verifications') || n.type === 'verification' || titleLower.includes('provider')) {
+    } else if (linkStr.includes('tab=verifications') || n.type === 'verification' || titleLower.includes('verification') || titleLower.includes('approval') || (providerMatch && titleLower.includes('registration'))) {
       setActiveTab('verifications');
-    } else if (linkStr.includes('tab=bookings') || n.type === 'booking' || titleLower.includes('booking')) {
+    } else if (linkStr.includes('tab=bookings') || n.type === 'booking' || titleLower.includes('booking') || bookingMatch) {
+      if (bookingMatch) setBookingSearch(bookingMatch[1]);
       setActiveTab('bookings');
+    } else if (linkStr.includes('tab=providers') || titleLower.includes('provider')) {
+      if (providerMatch) setProviderSearch(providerMatch[1]);
+      setActiveTab('providers');
     } else if (linkStr.includes('tab=customers') || titleLower.includes('customer')) {
       setActiveTab('customers');
     }
@@ -431,10 +501,10 @@ export default function AdminDashboardPage() {
       if (res.ok) {
         setSelectedCustomer(await res.json());
       } else {
-        alert('Could not fetch customer details.');
+        showToast('Could not fetch customer details.', 'error');
       }
     } catch (err) {
-      alert('Error loading customer.');
+      showToast('Error loading customer.', 'error');
     } finally {
       setCustomerModalLoading(false);
     }
@@ -456,10 +526,10 @@ export default function AdminDashboardPage() {
       if (res.ok) {
         setSelectedProvider(await res.json());
       } else {
-        alert('Could not fetch provider details.');
+        showToast('Could not fetch provider details.', 'error');
       }
     } catch (err) {
-      alert('Error loading provider.');
+      showToast('Error loading provider.', 'error');
     } finally {
       setProviderModalLoading(false);
     }
@@ -470,34 +540,19 @@ export default function AdminDashboardPage() {
     setSuspendModal({ open: true, role: 'provider', account: providerObj });
   };
 
-  // Restore Removed Account
-  const handleRestoreAccount = async (account, role) => {
-    if (!confirm(`Restore ${role} account "${account.name}" (${account.email}) to active status?`)) return;
-    try {
-      const endpoint =
-        role === 'customer'
-          ? `/api/admin/customers/${account.id}`
-          : `/api/admin/providers/${account.id}`;
-      const res = await fetch(endpoint, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'restore', reason: 'Restored by administrator from Removed Accounts list' })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || 'Failed to restore account.');
-      } else {
-        alert(data.message || 'Account restored.');
-        loadAdminData();
-        if (role === 'customer' && selectedCustomer?.customer?.id === account.id) {
-          handleViewCustomerDetails(account.id);
-        }
-        if (role === 'provider' && selectedProvider?.provider?.id === account.id) {
-          handleViewProviderDetails(account.id);
-        }
-      }
-    } catch (err) {
-      alert('Network error while restoring account.');
+  // Restore Removed Account via Accessible Confirmation Dialog
+  const handleRestoreAccount = (account, role) => {
+    setRestoreModal({ open: true, role, account });
+  };
+
+  const handleRestoreSuccess = (message) => {
+    showToast(message, 'success');
+    loadAdminData();
+    if (restoreModal.role === 'customer' && selectedCustomer?.customer?.id === restoreModal.account?.id) {
+      handleViewCustomerDetails(restoreModal.account.id);
+    }
+    if (restoreModal.role === 'provider' && selectedProvider?.provider?.id === restoreModal.account?.id) {
+      handleViewProviderDetails(restoreModal.account.id);
     }
   };
 
@@ -654,6 +709,7 @@ export default function AdminDashboardPage() {
       });
       const data = await res.json();
       if (res.ok) {
+        showToast('Booking updated successfully.', 'success');
         loadAdminData();
         if (selectedBooking && selectedBooking.id === bookingId) {
           setSelectedBooking(prev => ({
@@ -663,37 +719,74 @@ export default function AdminDashboardPage() {
           }));
         }
       } else {
-        alert(data.error || 'Failed to update booking.');
+        showToast(data.error || 'Failed to update booking.', 'error');
       }
     } catch (err) {
-      alert('Failed to update booking.');
+      showToast('Failed to update booking.', 'error');
     }
   };
 
   // Save Settings
   const handleSaveSettings = async (e) => {
     e.preventDefault();
+    setSavingSettings(true);
     try {
-      await fetch('/api/admin/settings', {
+      // 1. Update commission rate & sponsored fee in platform_settings
+      const p1 = fetch('/api/admin/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ key: 'platform_commission_rate', value: commissionRate })
       });
-      await fetch('/api/admin/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ key: 'provider_registration_fee', value: registrationFee })
-      });
-      await fetch('/api/admin/settings', {
+      const p2 = fetch('/api/admin/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ key: 'sponsored_listing_fee_monthly', value: sponsoredFee })
       });
+
+      // 2. Update versioned platform_fee_settings with reason and audit history
+      const p3 = fetch('/api/payments/fees', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          feeType: 'provider_registration',
+          amount: parseFloat(registrationFee),
+          reason: feeUpdateReason || 'Platform settings update'
+        })
+      });
+      const p4 = fetch('/api/payments/fees', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          feeType: 'provider_subscription',
+          amount: parseFloat(subscriptionFee),
+          reason: feeUpdateReason || 'Platform settings update'
+        })
+      });
+      const p5 = fetch('/api/payments/fees', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          feeType: 'customer_booking',
+          amount: parseFloat(bookingFee),
+          reason: feeUpdateReason || 'Platform settings update'
+        })
+      });
+
+      const results = await Promise.all([p1, p2, p3, p4, p5]);
+      const failed = results.find(r => !r.ok);
+      if (failed) {
+        const errorData = await failed.json().catch(() => ({}));
+        throw new Error(errorData.error || 'One or more fee settings could not be updated.');
+      }
+
       setSettingsSaved(true);
-      setTimeout(() => setSettingsSaved(false), 3000);
+      showToast('Platform fee settings saved successfully.', 'success');
+      setTimeout(() => setSettingsSaved(false), 3500);
       loadAdminData();
     } catch (err) {
-      alert('Failed to update platform settings.');
+      showToast(err.message || 'Failed to update platform settings.', 'error');
+    } finally {
+      setSavingSettings(false);
     }
   };
 
@@ -2654,13 +2747,13 @@ export default function AdminDashboardPage() {
             TAB 7: SETTINGS
            ========================================================================= */}
         {activeTab === 'settings' && (
-          <div style={{ maxWidth: '680px' }}>
-            <div className="card" style={{ padding: '2rem' }}>
+          <div style={{ maxWidth: '840px' }}>
+            <div className="card" style={{ padding: '2rem', marginBottom: '2rem' }}>
               <h2 style={{ fontSize: '1.25rem', color: '#0F172A', marginBottom: '0.5rem' }}>
                 Platform Fee & Commission Configuration
               </h2>
               <p style={{ color: '#64748B', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
-                Adjust platform commission rates, verified provider registration fees, and sponsored badges.
+                Configure standard booking commission rates, one-time provider registration fees, monthly subscription fees, customer booking fees, and featured listing fees in Sri Lankan Rupees (LKR).
               </p>
 
               {settingsSaved && (
@@ -2677,62 +2770,209 @@ export default function AdminDashboardPage() {
                   fontSize: '0.875rem'
                 }}>
                   <CheckCircle2 size={16} />
-                  <span>Platform settings saved successfully to persistent database.</span>
+                  <span>Platform fee settings saved successfully to persistent database with audit logging.</span>
                 </div>
               )}
 
               <form onSubmit={handleSaveSettings}>
-                <div className="form-group" style={{ marginBottom: '1.25rem' }}>
-                  <label className="form-label" htmlFor="commRate">
-                    Standard Booking Commission Rate (Decimal, e.g. 0.10 = 10%)
-                  </label>
-                  <input
-                    id="commRate"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="1"
-                    value={commissionRate}
-                    onChange={(e) => setCommissionRate(e.target.value)}
-                    className="form-control"
-                  />
-                  <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.25rem' }}>
-                    Calculated automatically and recorded into the financial accounting ledger upon job completion.
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.25rem', marginBottom: '1.25rem' }}>
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="regFee">
+                      One-Time Provider Registration Fee (LKR)
+                    </label>
+                    <input
+                      id="regFee"
+                      type="number"
+                      min="0"
+                      step="50"
+                      value={registrationFee}
+                      onChange={(e) => setRegistrationFee(e.target.value)}
+                      className="form-control"
+                      required
+                    />
+                    <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.25rem' }}>
+                      Required before manual administrator approval of provider applications.
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="subFee">
+                      Monthly Provider Subscription Fee (LKR)
+                    </label>
+                    <input
+                      id="subFee"
+                      type="number"
+                      min="0"
+                      step="50"
+                      value={subscriptionFee}
+                      onChange={(e) => setSubscriptionFee(e.target.value)}
+                      className="form-control"
+                      required
+                    />
+                    <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.25rem' }}>
+                      Recurring monthly platform access fee. Includes a 5-day grace period.
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="bookFee">
+                      Customer Booking Fee (LKR)
+                    </label>
+                    <input
+                      id="bookFee"
+                      type="number"
+                      min="0"
+                      step="25"
+                      value={bookingFee}
+                      onChange={(e) => setBookingFee(e.target.value)}
+                      className="form-control"
+                      required
+                    />
+                    <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.25rem' }}>
+                      Required on new bookings before provider confirmation or acceptance.
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="commRate">
+                      Standard Booking Commission Rate (Decimal)
+                    </label>
+                    <input
+                      id="commRate"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max="1"
+                      value={commissionRate}
+                      onChange={(e) => setCommissionRate(e.target.value)}
+                      className="form-control"
+                      required
+                    />
+                    <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.25rem' }}>
+                      E.g. 0.10 = 10%. Deducted upon job completion.
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="sponsFee">
+                      Monthly Featured Spotlight Fee (LKR)
+                    </label>
+                    <input
+                      id="sponsFee"
+                      type="number"
+                      min="0"
+                      step="100"
+                      value={sponsoredFee}
+                      onChange={(e) => setSponsoredFee(e.target.value)}
+                      className="form-control"
+                      required
+                    />
+                    <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.25rem' }}>
+                      Promotional sponsored banner placement for featured providers.
+                    </div>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="updateReason">
+                      Reason for Fee Update (Audit Trail)
+                    </label>
+                    <input
+                      id="updateReason"
+                      type="text"
+                      placeholder="e.g., Annual platform pricing adjustment"
+                      value={feeUpdateReason}
+                      onChange={(e) => setFeeUpdateReason(e.target.value)}
+                      className="form-control"
+                    />
+                    <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '0.25rem' }}>
+                      Recorded in fee audit history and sent to active providers on price adjustments.
+                    </div>
                   </div>
                 </div>
 
-                <div className="form-group" style={{ marginBottom: '1.25rem' }}>
-                  <label className="form-label" htmlFor="regFee">
-                    One-Time Provider Verification Fee (LKR)
-                  </label>
-                  <input
-                    id="regFee"
-                    type="number"
-                    min="0"
-                    value={registrationFee}
-                    onChange={(e) => setRegistrationFee(e.target.value)}
-                    className="form-control"
-                  />
-                </div>
-
-                <div className="form-group" style={{ marginBottom: '1.75rem' }}>
-                  <label className="form-label" htmlFor="sponsFee">
-                    Monthly Featured Spotlight Fee (LKR)
-                  </label>
-                  <input
-                    id="sponsFee"
-                    type="number"
-                    min="0"
-                    value={sponsoredFee}
-                    onChange={(e) => setSponsoredFee(e.target.value)}
-                    className="form-control"
-                  />
-                </div>
-
-                <button type="submit" className="btn btn-primary btn-lg" style={{ width: '100%' }}>
-                  Save Platform Settings
+                <button
+                  type="submit"
+                  disabled={savingSettings}
+                  className="btn btn-primary btn-lg"
+                  style={{ width: '100%', opacity: savingSettings ? 0.7 : 1, cursor: savingSettings ? 'not-allowed' : 'pointer' }}
+                >
+                  {savingSettings ? 'Saving Platform Settings…' : 'Save Platform Settings'}
                 </button>
               </form>
+            </div>
+
+            {/* Fee Change Audit History */}
+            <div className="card" style={{ padding: '1.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <h3 style={{ fontSize: '1.1rem', color: '#0F172A', margin: 0 }}>
+                  Fee Versioning & Change History
+                </h3>
+                <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
+                  {feeHistory.length} Recorded Adjustments
+                </span>
+              </div>
+              <p style={{ color: '#64748B', fontSize: '0.82rem', marginBottom: '1.25rem' }}>
+                Immutable historical ledger of platform fee adjustments, including changed amounts, version numbers, authorizing administrators, and recorded reasons.
+              </p>
+
+              {feeHistory.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '2rem 1rem', color: '#94A3B8', fontSize: '0.875rem' }}>
+                  No fee adjustments recorded yet. Current platform baseline fees are in effect.
+                </div>
+              ) : (
+                <div className="table-responsive">
+                  <table className="table" style={{ width: '100%', fontSize: '0.85rem' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #E2E8F0', textAlign: 'left', color: '#64748B' }}>
+                        <th style={{ padding: '0.65rem 0.75rem' }}>Date (SLT)</th>
+                        <th style={{ padding: '0.65rem 0.75rem' }}>Fee Type</th>
+                        <th style={{ padding: '0.65rem 0.75rem' }}>Previous</th>
+                        <th style={{ padding: '0.65rem 0.75rem' }}>New Amount</th>
+                        <th style={{ padding: '0.65rem 0.75rem' }}>Version</th>
+                        <th style={{ padding: '0.65rem 0.75rem' }}>Changed By</th>
+                        <th style={{ padding: '0.65rem 0.75rem' }}>Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {feeHistory.map((h) => {
+                        const feeName =
+                          h.fee_type === 'provider_registration'
+                            ? 'Provider Registration'
+                            : h.fee_type === 'provider_subscription'
+                            ? 'Monthly Subscription'
+                            : h.fee_type === 'customer_booking'
+                            ? 'Customer Booking'
+                            : h.fee_type;
+                        return (
+                          <tr key={h.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                            <td style={{ padding: '0.65rem 0.75rem', color: '#64748B', whiteSpace: 'nowrap' }}>
+                              {formatDateTimeSL(h.created_at)}
+                            </td>
+                            <td style={{ padding: '0.65rem 0.75rem', fontWeight: 600, color: '#0F172A' }}>
+                              {feeName}
+                            </td>
+                            <td style={{ padding: '0.65rem 0.75rem', color: '#94A3B8' }}>
+                              {h.currency || 'LKR'} {h.previous_amount?.toLocaleString()}
+                            </td>
+                            <td style={{ padding: '0.65rem 0.75rem', fontWeight: 700, color: '#10B981' }}>
+                              {h.currency || 'LKR'} {h.new_amount?.toLocaleString()}
+                            </td>
+                            <td style={{ padding: '0.65rem 0.75rem' }}>
+                              <span className="badge badge-info" style={{ fontSize: '0.7rem' }}>v{h.version}</span>
+                            </td>
+                            <td style={{ padding: '0.65rem 0.75rem', color: '#334155' }}>
+                              {h.changed_by_name || h.changed_by}
+                            </td>
+                            <td style={{ padding: '0.65rem 0.75rem', color: '#64748B', fontSize: '0.8rem' }}>
+                              {h.reason || '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -2841,10 +3081,14 @@ export default function AdminDashboardPage() {
                     setNewAdTitle('');
                     setNewAdBannerText('');
                     setNewAdLinkUrl('');
+                    showToast('Promotion banner created successfully.', 'success');
                     loadAdminData();
+                  } else {
+                    const data = await res.json().catch(() => ({}));
+                    showToast(data.error || 'Failed to create promotion banner.', 'error');
                   }
                 } catch (err) {
-                  alert('Failed to create ad.');
+                  showToast('Failed to create promotion banner.', 'error');
                 }
               }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
@@ -3863,6 +4107,15 @@ export default function AdminDashboardPage() {
         }}
       />
 
+      <RestoreAccountModal
+        open={restoreModal.open}
+        role={restoreModal.role}
+        account={restoreModal.account}
+        token={token}
+        onClose={() => setRestoreModal({ open: false, role: 'customer', account: null })}
+        onSuccess={handleRestoreSuccess}
+      />
+
       {/* =========================================================================
           DELETE NOTIFICATIONS CONFIRMATION MODAL
          ========================================================================= */}
@@ -4009,6 +4262,41 @@ export default function AdminDashboardPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Persistent Administrator Toast Banner */}
+      {adminToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            zIndex: 9999,
+            backgroundColor:
+              adminToast.type === 'error'
+                ? '#DC2626'
+                : adminToast.type === 'success'
+                ? '#059669'
+                : '#0F172A',
+            color: '#FFFFFF',
+            padding: '12px 20px',
+            borderRadius: '8px',
+            boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.25), 0 8px 10px -6px rgba(0, 0, 0, 0.2)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            fontSize: '0.875rem',
+            fontWeight: 600,
+            animation: 'fadeIn 0.2s ease-in-out'
+          }}
+        >
+          {adminToast.type === 'error' && <AlertCircle size={18} />}
+          {adminToast.type === 'success' && <CheckCircle2 size={18} />}
+          {adminToast.type === 'info' && <Info size={18} />}
+          <span>{adminToast.message}</span>
         </div>
       )}
     </div>

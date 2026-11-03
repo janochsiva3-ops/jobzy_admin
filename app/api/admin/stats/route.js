@@ -23,7 +23,7 @@ export async function GET(request) {
   const providersCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'provider' AND status != 'removed'").get().count;
   const approvedProvidersCount = db.prepare("SELECT COUNT(*) as count FROM provider_profiles p JOIN users u ON p.id = u.id WHERE p.verification_status = 'approved' AND u.status != 'removed'").get().count;
   const pendingVerificationsCount = db.prepare("SELECT COUNT(*) as count FROM provider_profiles p JOIN users u ON p.id = u.id WHERE p.verification_status = 'pending' AND u.status != 'removed'").get().count;
-  const awaitingRegistrationPaymentCount = db.prepare("SELECT COUNT(*) as count FROM provider_profiles p JOIN users u ON p.id = u.id WHERE p.registration_fee_paid = 0 AND u.status != 'removed'").get().count;
+  const awaitingRegistrationPaymentCount = db.prepare("SELECT COUNT(*) as count FROM provider_profiles p JOIN users u ON p.id = u.id WHERE p.registration_fee_paid = 0 AND p.verification_status = 'pending' AND u.status != 'removed'").get().count;
   const pendingAdminApprovalCount = db.prepare("SELECT COUNT(*) as count FROM provider_profiles p JOIN users u ON p.id = u.id WHERE p.registration_fee_paid = 1 AND p.verification_status = 'pending' AND u.status != 'removed'").get().count;
   const changesRequestedCount = db.prepare("SELECT COUNT(*) as count FROM provider_profiles p JOIN users u ON p.id = u.id WHERE p.verification_status = 'changes_requested' AND u.status != 'removed'").get().count;
   const overdueSubscriptionsCount = db.prepare("SELECT COUNT(*) as count FROM provider_subscriptions ps JOIN users u ON ps.provider_id = u.id WHERE ps.status IN ('past_due', 'suspended_unpaid') AND u.status != 'removed'").get().count;

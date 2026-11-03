@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import getDb, { createNotification, logAccountAction } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
+import { syncRowToSupabase } from '@/lib/supabaseSync';
 
 export async function GET(request, { params }) {
   const { id } = await params;
@@ -145,6 +146,12 @@ export async function PUT(request, { params }) {
         details: { previousEmail: customer.email, newEmail: normEmail }
       });
 
+      try {
+        syncRowToSupabase(db, 'users', id);
+      } catch (syncErr) {
+        console.error('Supabase sync error on customer edit:', syncErr);
+      }
+
       return NextResponse.json({
         success: true,
         message: 'Customer profile details updated.'
@@ -184,6 +191,12 @@ export async function PUT(request, { params }) {
         'Your Jobzy customer account has been restored and is now active. You may log in to access your bookings and receipts.',
         '/customer/dashboard'
       );
+
+      try {
+        syncRowToSupabase(db, 'users', id);
+      } catch (syncErr) {
+        console.error('Supabase sync error on customer restore:', syncErr);
+      }
 
       return NextResponse.json({
         success: true,
@@ -233,6 +246,12 @@ export async function PUT(request, { params }) {
         '/contact'
       );
 
+      try {
+        syncRowToSupabase(db, 'users', id);
+      } catch (syncErr) {
+        console.error('Supabase sync error on customer suspend:', syncErr);
+      }
+
       return NextResponse.json({
         success: true,
         message: `Customer "${customer.name}" has been suspended and active sessions have been revoked.`
@@ -264,6 +283,12 @@ export async function PUT(request, { params }) {
         'Your Jobzy customer account has been reactivated. You can now log in and place service bookings.',
         '/customer/dashboard'
       );
+
+      try {
+        syncRowToSupabase(db, 'users', id);
+      } catch (syncErr) {
+        console.error('Supabase sync error on customer reactivate:', syncErr);
+      }
 
       return NextResponse.json({
         success: true,
@@ -388,6 +413,12 @@ export async function DELETE(request, { params }) {
       'Your Jobzy account has been deactivated and removed from active service. Historical booking and payment receipts remain preserved in accordance with platform policy.',
       '/contact'
     );
+
+    try {
+      syncRowToSupabase(db, 'users', customerId);
+    } catch (syncErr) {
+      console.error('Supabase sync error on customer remove:', syncErr);
+    }
 
     return NextResponse.json({
       success: true,
