@@ -134,6 +134,10 @@ export default function AdminDashboardPage() {
   const [decisionAction, setDecisionAction] = useState('approved'); // 'approved' | 'rejected' | 'request_changes'
   const [decisionNotes, setDecisionNotes] = useState('');
   const [submittingDecision, setSubmittingDecision] = useState(false);
+  const [decisionError, setDecisionError] = useState(null);
+  const [decisionSuccess, setDecisionSuccess] = useState(null);
+  const [paymentActionLoading, setPaymentActionLoading] = useState(null);
+  const [paymentFeedback, setPaymentFeedback] = useState(null);
 
   // 4. Bookings Tab State
   const [bookings, setBookings] = useState([]);
@@ -501,12 +505,19 @@ export default function AdminDashboardPage() {
   const handleSubmitDecision = async (e) => {
     e.preventDefault();
     if (!reviewModalProvider) return;
+    setDecisionError(null);
+    setDecisionSuccess(null);
 
     if ((decisionAction === 'rejected' || decisionAction === 'request_changes') && !decisionNotes.trim()) {
-      alert(decisionAction === 'rejected'
+      setDecisionError(decisionAction === 'rejected'
         ? 'A rejection reason is required.'
         : 'Please specify what changes or corrections the provider must submit.'
       );
+      return;
+    }
+
+    if (decisionAction === 'approved' && !reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified') {
+      setDecisionError('Cannot approve provider application before the one-time registration fee payment is verified on the server.');
       return;
     }
 
@@ -526,17 +537,103 @@ export default function AdminDashboardPage() {
 
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || 'Failed to submit decision.');
+        setDecisionError(data.error || 'Failed to submit decision.');
       } else {
-        alert(`Success: ${data.message}`);
-        setReviewModalProvider(null);
-        setDecisionNotes('');
+        setDecisionSuccess(`Success: ${data.message}`);
         loadAdminData();
+        setTimeout(() => {
+          setReviewModalProvider(null);
+          setDecisionNotes('');
+          setDecisionError(null);
+          setDecisionSuccess(null);
+        }, 1200);
       }
     } catch (err) {
-      alert('Network error while recording decision.');
+      setDecisionError('Network error while recording decision.');
     } finally {
       setSubmittingDecision(false);
+    }
+  };
+
+  // Check Payment Status with Gateway (Administrator Reconciliation)
+  const handleCheckPaymentStatus = async (providerId) => {
+    setPaymentActionLoading(providerId);
+    setPaymentFeedback(null);
+    try {
+      const res = await fetch(`/api/admin/verifications/${providerId}/check-payment`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPaymentFeedback({
+          type: data.verified ? 'success' : 'info',
+          message: data.message || (data.verified ? 'Payment verified successfully.' : 'Payment check completed.'),
+          providerId
+        });
+        loadAdminData();
+        if (reviewModalProvider && (reviewModalProvider.id === providerId || reviewModalProvider.confirmation_id === providerId)) {
+          setReviewModalProvider(prev => ({
+            ...prev,
+            registration_fee_paid: data.verified ? 1 : prev.registration_fee_paid,
+            registration_payment_status: data.status,
+            registration_txn_ref: data.transaction?.transaction_reference || prev.registration_txn_ref,
+            registration_paid_at: data.transaction?.updated_at || prev.registration_paid_at
+          }));
+        }
+      } else {
+        setPaymentFeedback({
+          type: 'error',
+          message: data.error || 'Failed to check payment status.',
+          providerId
+        });
+      }
+    } catch (err) {
+      setPaymentFeedback({
+        type: 'error',
+        message: 'Network error while checking payment status.',
+        providerId
+      });
+    } finally {
+      setPaymentActionLoading(null);
+    }
+  };
+
+  // Send Registration Payment Reminder to Provider
+  const handleSendPaymentReminder = async (providerId) => {
+    setPaymentActionLoading(providerId);
+    setPaymentFeedback(null);
+    try {
+      const res = await fetch(`/api/admin/verifications/${providerId}/remind-payment`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setPaymentFeedback({
+          type: 'success',
+          message: data.message || 'Payment reminder sent successfully.',
+          providerId
+        });
+      } else {
+        setPaymentFeedback({
+          type: 'error',
+          message: data.error || 'Failed to send payment reminder.',
+          providerId
+        });
+      }
+    } catch (err) {
+      setPaymentFeedback({
+        type: 'error',
+        message: 'Network error while sending payment reminder.',
+        providerId
+      });
+    } finally {
+      setPaymentActionLoading(null);
     }
   };
 
@@ -1719,17 +1816,103 @@ export default function AdminDashboardPage() {
                                 ? 'Pending Admin Approval'
                                 : v.verification_status.replace('_', ' ').toUpperCase()}
                             </span>
-                            <span style={{
-                              fontSize: '0.75rem',
-                              fontWeight: 700,
-                              padding: '0.15rem 0.55rem',
-                              borderRadius: '999px',
-                              background: v.registration_fee_paid ? '#ECFDF5' : '#FEF2F2',
-                              color: v.registration_fee_paid ? '#047857' : '#B91C1C',
-                              border: `1px solid ${v.registration_fee_paid ? '#A7F3D0' : '#FECACA'}`
-                            }}>
-                              {v.registration_fee_paid ? '✓ Registration Fee Verified' : '✕ Registration Fee Unpaid'}
-                            </span>
+
+                            {/* Payment Status Badge */}
+                            {v.registration_payment_status === 'verified' || v.registration_fee_paid ? (
+                              <span style={{
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                padding: '0.2rem 0.6rem',
+                                borderRadius: '999px',
+                                background: '#ECFDF5',
+                                color: '#047857',
+                                border: '1px solid #A7F3D0',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.3rem'
+                              }}>
+                                <CheckCircle2 size={13} />
+                                <span>Fee Verified ({v.registration_fee_currency || 'LKR'} {(v.registration_fee_due || 2500).toLocaleString()})</span>
+                              </span>
+                            ) : v.registration_payment_status === 'pending' ? (
+                              <span style={{
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                padding: '0.2rem 0.6rem',
+                                borderRadius: '999px',
+                                background: '#FEF3C7',
+                                color: '#92400E',
+                                border: '1px solid #FDE68A',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.3rem'
+                              }}>
+                                <Clock size={13} />
+                                <span>Payment Pending Gateway Verification</span>
+                              </span>
+                            ) : v.registration_payment_status === 'failed' ? (
+                              <span style={{
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                padding: '0.2rem 0.6rem',
+                                borderRadius: '999px',
+                                background: '#FEF2F2',
+                                color: '#B91C1C',
+                                border: '1px solid #FECACA',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.3rem'
+                              }}>
+                                <XCircle size={13} />
+                                <span>Payment Failed</span>
+                              </span>
+                            ) : v.registration_payment_status === 'refunded' ? (
+                              <span style={{
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                padding: '0.2rem 0.6rem',
+                                borderRadius: '999px',
+                                background: '#F3E8FF',
+                                color: '#6B21A8',
+                                border: '1px solid #E9D5FF',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.3rem'
+                              }}>
+                                <RefreshCw size={13} />
+                                <span>Fee Refunded</span>
+                              </span>
+                            ) : (
+                              <span style={{
+                                fontSize: '0.75rem',
+                                fontWeight: 700,
+                                padding: '0.2rem 0.6rem',
+                                borderRadius: '999px',
+                                background: '#FEF2F2',
+                                color: '#B91C1C',
+                                border: '1px solid #FECACA',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.3rem'
+                              }}>
+                                <AlertCircle size={13} />
+                                <span>Fee Unpaid ({v.registration_fee_currency || 'LKR'} {(v.registration_fee_due || 2500).toLocaleString()} Due)</span>
+                              </span>
+                            )}
+
+                            {v.registration_txn_ref && (
+                              <span style={{
+                                fontSize: '0.72rem',
+                                color: '#475569',
+                                background: '#F8FAFC',
+                                border: '1px solid #E2E8F0',
+                                padding: '0.15rem 0.45rem',
+                                borderRadius: '4px',
+                                fontFamily: 'monospace'
+                              }}>
+                                Ref: {v.registration_txn_ref}
+                              </span>
+                            )}
                           </div>
                           <div style={{ fontSize: '0.85rem', color: '#64748B', marginTop: '0.2rem' }}>
                             {v.category_name} &bull; {v.title} &bull; {v.city || v.district} ({v.district})
@@ -1738,35 +1921,75 @@ export default function AdminDashboardPage() {
                       </div>
 
                       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                        <button
-                          onClick={() => {
-                            if (!v.registration_fee_paid) return;
-                            setReviewModalProvider(v);
-                            setDecisionAction('approved');
-                            setDecisionNotes('');
-                          }}
-                          disabled={!v.registration_fee_paid}
-                          title={!v.registration_fee_paid ? 'Provider must complete and verify their Registration Fee payment before approval' : 'Approve provider'}
-                          className="btn btn-primary btn-sm"
-                          style={{
-                            background: v.registration_fee_paid ? '#10B981' : '#94A3B8',
-                            borderColor: v.registration_fee_paid ? '#10B981' : '#94A3B8',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.35rem',
-                            cursor: v.registration_fee_paid ? 'pointer' : 'not-allowed',
-                            opacity: v.registration_fee_paid ? 1 : 0.65
-                          }}
-                        >
-                          <Check size={14} />
-                          <span>{v.registration_fee_paid ? 'Approve' : 'Approve (Locked — Unpaid)'}</span>
-                        </button>
+                        {/* Quick Payment Actions */}
+                        {v.registration_payment_status === 'unpaid' && (
+                          <button
+                            type="button"
+                            onClick={() => handleSendPaymentReminder(v.id)}
+                            disabled={paymentActionLoading === v.id}
+                            className="btn btn-secondary btn-sm"
+                            style={{ borderColor: '#F59E0B', color: '#B45309', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem' }}
+                            title="Send payment reminder notification to provider"
+                          >
+                            <Bell size={13} />
+                            <span>{paymentActionLoading === v.id ? 'Sending…' : 'Send Payment Reminder'}</span>
+                          </button>
+                        )}
+
+                        {v.registration_payment_status === 'pending' && (
+                          <button
+                            type="button"
+                            onClick={() => handleCheckPaymentStatus(v.id)}
+                            disabled={paymentActionLoading === v.id}
+                            className="btn btn-secondary btn-sm"
+                            style={{ borderColor: '#2563EB', color: '#1D4ED8', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem' }}
+                            title="Query gateway to verify if payment was completed"
+                          >
+                            <RefreshCw size={13} className={paymentActionLoading === v.id ? 'animate-spin' : ''} />
+                            <span>{paymentActionLoading === v.id ? 'Checking…' : 'Check Payment Status'}</span>
+                          </button>
+                        )}
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <button
+                            onClick={() => {
+                              if (!v.registration_fee_paid && v.registration_payment_status !== 'verified') return;
+                              setReviewModalProvider(v);
+                              setDecisionAction('approved');
+                              setDecisionNotes('');
+                              setDecisionError(null);
+                              setDecisionSuccess(null);
+                            }}
+                            disabled={!v.registration_fee_paid && v.registration_payment_status !== 'verified'}
+                            title={!v.registration_fee_paid ? 'Provider must complete and verify their Registration Fee payment before approval' : 'Approve provider'}
+                            className="btn btn-primary btn-sm"
+                            style={{
+                              background: (v.registration_fee_paid || v.registration_payment_status === 'verified') ? '#10B981' : '#94A3B8',
+                              borderColor: (v.registration_fee_paid || v.registration_payment_status === 'verified') ? '#10B981' : '#94A3B8',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.35rem',
+                              cursor: (v.registration_fee_paid || v.registration_payment_status === 'verified') ? 'pointer' : 'not-allowed',
+                              opacity: (v.registration_fee_paid || v.registration_payment_status === 'verified') ? 1 : 0.65
+                            }}
+                          >
+                            <Check size={14} />
+                            <span>{(v.registration_fee_paid || v.registration_payment_status === 'verified') ? 'Approve' : 'Approve (Locked)'}</span>
+                          </button>
+                          {!v.registration_fee_paid && v.registration_payment_status !== 'verified' && (
+                            <span style={{ fontSize: '0.73rem', color: '#94A3B8', fontStyle: 'italic', maxWidth: '120px', lineHeight: 1.2 }}>
+                              Payment verification required
+                            </span>
+                          )}
+                        </div>
 
                         <button
                           onClick={() => {
                             setReviewModalProvider(v);
                             setDecisionAction('request_changes');
                             setDecisionNotes(v.decision_reason || '');
+                            setDecisionError(null);
+                            setDecisionSuccess(null);
                           }}
                           className="btn btn-secondary btn-sm"
                           style={{ borderColor: '#EA580C', color: '#EA580C', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
@@ -1780,6 +2003,8 @@ export default function AdminDashboardPage() {
                             setReviewModalProvider(v);
                             setDecisionAction('rejected');
                             setDecisionNotes('');
+                            setDecisionError(null);
+                            setDecisionSuccess(null);
                           }}
                           className="btn btn-secondary btn-sm"
                           style={{ borderColor: '#EF4444', color: '#EF4444', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
@@ -1789,6 +2014,26 @@ export default function AdminDashboardPage() {
                         </button>
                       </div>
                     </div>
+
+                    {/* Inline feedback banner for actions on this provider */}
+                    {paymentFeedback && paymentFeedback.providerId === v.id && (
+                      <div style={{
+                        marginTop: '0.75rem',
+                        marginBottom: '0.5rem',
+                        padding: '0.5rem 0.75rem',
+                        borderRadius: '6px',
+                        fontSize: '0.82rem',
+                        background: paymentFeedback.type === 'success' ? '#ECFDF5' : paymentFeedback.type === 'error' ? '#FEF2F2' : '#EFF6FF',
+                        color: paymentFeedback.type === 'success' ? '#065F46' : paymentFeedback.type === 'error' ? '#991B1B' : '#1E40AF',
+                        border: `1px solid ${paymentFeedback.type === 'success' ? '#A7F3D0' : paymentFeedback.type === 'error' ? '#FECACA' : '#BFDBFE'}`,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.4rem'
+                      }}>
+                        {paymentFeedback.type === 'success' ? <CheckCircle2 size={15} /> : paymentFeedback.type === 'error' ? <AlertCircle size={15} /> : <Info size={15} />}
+                        <span>{paymentFeedback.message}</span>
+                      </div>
+                    )}
 
                     {/* Submitted documents & Profile Details */}
                     <div style={{ background: '#F8FAFC', borderRadius: '8px', padding: '1rem', border: '1px solid #E2E8F0', marginTop: '0.75rem' }}>
@@ -3123,20 +3368,167 @@ export default function AdminDashboardPage() {
               Review Provider Application
             </h2>
             <div style={{ fontSize: '0.85rem', color: '#64748B', marginBottom: '1rem' }}>
-              Provider: <strong>{reviewModalProvider.name}</strong> &bull; Confirmation ID: <strong style={{ color: '#1E40AF' }}>{reviewModalProvider.confirmation_id || 'Pending'}</strong>
+              Review registration details and documents. Applications require server-verified payment of the registration fee before administrator approval.
             </div>
 
-            {!reviewModalProvider.registration_fee_paid && (
+            {/* Error and Success banners inside modal */}
+            {decisionError && (
               <div style={{
                 background: '#FEF2F2',
                 border: '1px solid #FECACA',
                 borderRadius: '8px',
+                padding: '0.75rem 1rem',
+                marginBottom: '1rem',
+                fontSize: '0.84rem',
+                color: '#991B1B',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}>
+                <AlertCircle size={16} />
+                <span>{decisionError}</span>
+              </div>
+            )}
+
+            {decisionSuccess && (
+              <div style={{
+                background: '#ECFDF5',
+                border: '1px solid #A7F3D0',
+                borderRadius: '8px',
+                padding: '0.75rem 1rem',
+                marginBottom: '1rem',
+                fontSize: '0.84rem',
+                color: '#065F46',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}>
+                <CheckCircle2 size={16} />
+                <span>{decisionSuccess}</span>
+              </div>
+            )}
+
+            {/* Payment & Application Status Overview Box */}
+            <div style={{
+              background: '#F8FAFC',
+              border: '1px solid #E2E8F0',
+              borderRadius: '8px',
+              padding: '1rem',
+              marginBottom: '1.25rem'
+            }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.75rem', fontSize: '0.85rem' }}>
+                <div>
+                  <span style={{ color: '#64748B', display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 700 }}>Provider Name</span>
+                  <span style={{ fontWeight: 600, color: '#0F172A' }}>{reviewModalProvider.name}</span>
+                </div>
+                <div>
+                  <span style={{ color: '#64748B', display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 700 }}>Registration ID</span>
+                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#1E40AF' }}>{reviewModalProvider.confirmation_id || 'Pending'}</span>
+                </div>
+                <div>
+                  <span style={{ color: '#64748B', display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 700 }}>Registration Fee Due</span>
+                  <span style={{ fontWeight: 600, color: '#0F172A' }}>
+                    {reviewModalProvider.registration_fee_currency || 'LKR'} {(reviewModalProvider.registration_fee_due || 2500).toLocaleString()}
+                  </span>
+                </div>
+                <div>
+                  <span style={{ color: '#64748B', display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 700 }}>Approval Status</span>
+                  <span style={{
+                    fontWeight: 600,
+                    textTransform: 'capitalize',
+                    color: reviewModalProvider.verification_status === 'approved' ? '#047857' : reviewModalProvider.verification_status === 'changes_requested' ? '#EA580C' : '#B45309'
+                  }}>
+                    {reviewModalProvider.verification_status.replace('_', ' ')}
+                  </span>
+                </div>
+                <div>
+                  <span style={{ color: '#64748B', display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 700 }}>Payment Status</span>
+                  <div>
+                    {reviewModalProvider.registration_payment_status === 'verified' || reviewModalProvider.registration_fee_paid ? (
+                      <span style={{ color: '#047857', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                        <CheckCircle2 size={14} /> Verified
+                      </span>
+                    ) : reviewModalProvider.registration_payment_status === 'pending' ? (
+                      <span style={{ color: '#B45309', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                        <Clock size={14} /> Pending Gateway Verification
+                      </span>
+                    ) : reviewModalProvider.registration_payment_status === 'failed' ? (
+                      <span style={{ color: '#DC2626', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                        <XCircle size={14} /> Failed
+                      </span>
+                    ) : reviewModalProvider.registration_payment_status === 'refunded' ? (
+                      <span style={{ color: '#7C3AED', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                        <RefreshCw size={14} /> Refunded
+                      </span>
+                    ) : (
+                      <span style={{ color: '#DC2626', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                        <AlertCircle size={14} /> Unpaid
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <span style={{ color: '#64748B', display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 700 }}>Transaction Ref</span>
+                  <span style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: reviewModalProvider.registration_txn_ref ? '#0F172A' : '#94A3B8' }}>
+                    {reviewModalProvider.registration_txn_ref || 'None'}
+                  </span>
+                </div>
+                {reviewModalProvider.registration_paid_at && (
+                  <div style={{ gridColumn: 'span 2' }}>
+                    <span style={{ color: '#64748B', display: 'block', fontSize: '0.75rem', textTransform: 'uppercase', fontWeight: 700 }}>Verification Date</span>
+                    <span style={{ fontSize: '0.82rem', color: '#0F172A' }}>
+                      {new Date(reviewModalProvider.registration_paid_at).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Action buttons inside the modal */}
+              {(!reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified') && (
+                <div style={{ marginTop: '0.85rem', paddingTop: '0.75rem', borderTop: '1px solid #E2E8F0', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                  {reviewModalProvider.registration_payment_status === 'pending' ? (
+                    <button
+                      type="button"
+                      onClick={() => handleCheckPaymentStatus(reviewModalProvider.id)}
+                      disabled={paymentActionLoading === reviewModalProvider.id}
+                      className="btn btn-secondary btn-sm"
+                      style={{ borderColor: '#2563EB', color: '#1D4ED8', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem' }}
+                    >
+                      <RefreshCw size={13} className={paymentActionLoading === reviewModalProvider.id ? 'animate-spin' : ''} />
+                      <span>{paymentActionLoading === reviewModalProvider.id ? 'Checking Gateway…' : 'Check Payment Status'}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleSendPaymentReminder(reviewModalProvider.id)}
+                      disabled={paymentActionLoading === reviewModalProvider.id}
+                      className="btn btn-secondary btn-sm"
+                      style={{ borderColor: '#F59E0B', color: '#B45309', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem' }}
+                    >
+                      <Bell size={13} />
+                      <span>{paymentActionLoading === reviewModalProvider.id ? 'Sending Reminder…' : 'Send Payment Reminder'}</span>
+                    </button>
+                  )}
+                  <span style={{ fontSize: '0.75rem', color: '#64748B', fontStyle: 'italic' }}>
+                    {reviewModalProvider.registration_payment_status === 'pending'
+                      ? 'Reconciles payment if webhook callback was missed.'
+                      : 'Notifies provider to complete registration checkout.'}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {!reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified' && (
+              <div style={{
+                background: '#FFFBEB',
+                border: '1px solid #FDE68A',
+                borderRadius: '8px',
                 padding: '0.85rem 1rem',
                 marginBottom: '1.1rem',
                 fontSize: '0.82rem',
-                color: '#991B1B'
+                color: '#92400E'
               }}>
-                <strong>Registration Payment Required Before Approval:</strong> This provider has not yet completed their one-time registration fee payment (`Awaiting Registration Payment`). The Approve action is disabled until payment is verified on the server.
+                <strong>Approval Locked:</strong> This provider has not yet completed their one-time registration fee payment. The Approve action is disabled until payment is verified on the server. You can still <em>Request Changes</em> or <em>Reject</em>.
               </div>
             )}
 
@@ -3147,31 +3539,31 @@ export default function AdminDashboardPage() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem' }}>
                   <button
                     type="button"
-                    disabled={!reviewModalProvider.registration_fee_paid}
+                    disabled={!reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified'}
                     onClick={() => {
-                      if (!reviewModalProvider.registration_fee_paid) return;
+                      if (!reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified') return;
                       setDecisionAction('approved');
                     }}
                     style={{
                       padding: '0.6rem 0.5rem',
                       borderRadius: '6px',
                       border: decisionAction === 'approved' ? '2px solid #10B981' : '1px solid #CBD5E1',
-                      background: !reviewModalProvider.registration_fee_paid
+                      background: (!reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified')
                         ? '#F1F5F9'
                         : decisionAction === 'approved'
                         ? '#ECFDF5'
                         : '#FFFFFF',
-                      color: !reviewModalProvider.registration_fee_paid
+                      color: (!reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified')
                         ? '#94A3B8'
                         : decisionAction === 'approved'
                         ? '#065F46'
                         : '#334155',
                       fontWeight: 700,
                       fontSize: '0.85rem',
-                      cursor: !reviewModalProvider.registration_fee_paid ? 'not-allowed' : 'pointer'
+                      cursor: (!reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified') ? 'not-allowed' : 'pointer'
                     }}
                   >
-                    ✓ Approve {!reviewModalProvider.registration_fee_paid ? '(Unpaid)' : ''}
+                    ✓ Approve {(!reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified') ? '(Unpaid)' : ''}
                   </button>
 
                   <button
@@ -3236,38 +3628,47 @@ export default function AdminDashboardPage() {
                 />
               </div>
 
-              <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  onClick={() => setReviewModalProvider(null)}
-                  className="btn btn-secondary"
-                  disabled={submittingDecision}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={submittingDecision || (decisionAction === 'approved' && !reviewModalProvider.registration_fee_paid)}
-                  style={{
-                    background:
-                      decisionAction === 'approved'
-                        ? '#10B981'
-                        : decisionAction === 'request_changes'
-                        ? '#EA580C'
-                        : '#EF4444',
-                    borderColor:
-                      decisionAction === 'approved'
-                        ? '#10B981'
-                        : decisionAction === 'request_changes'
-                        ? '#EA580C'
-                        : '#EF4444',
-                    opacity: (decisionAction === 'approved' && !reviewModalProvider.registration_fee_paid) ? 0.5 : 1,
-                    cursor: (decisionAction === 'approved' && !reviewModalProvider.registration_fee_paid) ? 'not-allowed' : 'pointer'
-                  }}
-                >
-                  {submittingDecision ? 'Recording Decision…' : `Confirm ${decisionAction.replace(/_/g, ' ').toUpperCase()}`}
-                </button>
+              <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  {decisionAction === 'approved' && !reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified' && (
+                    <span style={{ fontSize: '0.78rem', color: '#DC2626', fontWeight: 600 }}>
+                      Registration fee payment required before approval.
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <button
+                    type="button"
+                    onClick={() => setReviewModalProvider(null)}
+                    className="btn btn-secondary"
+                    disabled={submittingDecision}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={submittingDecision || (decisionAction === 'approved' && !reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified')}
+                    style={{
+                      background:
+                        decisionAction === 'approved'
+                          ? '#10B981'
+                          : decisionAction === 'request_changes'
+                          ? '#EA580C'
+                          : '#EF4444',
+                      borderColor:
+                        decisionAction === 'approved'
+                          ? '#10B981'
+                          : decisionAction === 'request_changes'
+                          ? '#EA580C'
+                          : '#EF4444',
+                      opacity: (decisionAction === 'approved' && !reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified') ? 0.5 : 1,
+                      cursor: (decisionAction === 'approved' && !reviewModalProvider.registration_fee_paid && reviewModalProvider.registration_payment_status !== 'verified') ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {submittingDecision ? 'Recording Decision…' : `Confirm ${decisionAction.replace(/_/g, ' ').toUpperCase()}`}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

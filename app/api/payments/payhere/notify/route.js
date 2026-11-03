@@ -27,7 +27,9 @@ export async function POST(request) {
     } = body;
 
     const db = getDb();
-    const feeSetting = db.prepare("SELECT * FROM platform_fee_settings LIMIT 1").get();
+    const txn = db.prepare("SELECT * FROM transactions WHERE transaction_reference = ? OR id = ?").get(order_id, order_id);
+    const feeType = txn?.fee_type || 'provider_registration';
+    const feeSetting = db.prepare("SELECT * FROM platform_fee_settings WHERE fee_type = ?").get(feeType);
     const merchantSecret = feeSetting?.payhere_merchant_secret || process.env.PAYHERE_MERCHANT_SECRET;
 
     // Verify signature
@@ -39,7 +41,16 @@ export async function POST(request) {
 
     // Status code: 2 = Success, 0 = Pending, -1 = Canceled, -2 = Failed, -3 = Chargedback
     if (parseInt(status_code, 10) === 2) {
-      confirmPayment(order_id, payment_id, body, 'payhere');
+      const confirmResult = confirmPayment(order_id, payment_id, body, 'payhere');
+      const freshTxn = confirmResult?.transaction || db.prepare("SELECT * FROM transactions WHERE transaction_reference = ? OR id = ?").get(order_id, order_id);
+      if (freshTxn) {
+        import('@/lib/supabaseSync').then(({ syncRowToSupabase }) => {
+          syncRowToSupabase(db, 'transactions', freshTxn.id);
+          if (freshTxn.fee_type === 'provider_registration') {
+            syncRowToSupabase(db, 'provider_profiles', freshTxn.user_id);
+          }
+        }).catch(err => console.error('Supabase sync error in PayHere notify:', err));
+      }
       return new NextResponse('OK', { status: 200 });
     } else if (parseInt(status_code, 10) === -2 || parseInt(status_code, 10) === -1) {
       // Mark transaction as failed / cancelled

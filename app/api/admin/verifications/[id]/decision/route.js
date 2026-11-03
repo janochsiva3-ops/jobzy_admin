@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import getDb, { createNotification, logAccountAction } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { getActiveFeeSetting } from '@/lib/paymentService';
+import { syncRowToSupabase } from '@/lib/supabaseSync';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(request, { params }) {
   const { id } = await params;
@@ -33,25 +36,36 @@ export async function POST(request, { params }) {
     SELECT p.*, u.name, u.email, u.status as user_status, u.manual_suspended, u.subscription_suspended
     FROM provider_profiles p
     JOIN users u ON p.id = u.id
-    WHERE p.id = ?
-  `).get(id);
+    WHERE p.id = ? OR p.confirmation_id = ?
+  `).get(id, id);
 
   if (!provider) {
     return NextResponse.json({ error: 'Provider profile not found.' }, { status: 404 });
   }
+
+  const targetId = provider.id;
 
   // Strictly enforce verified registration fee payment before allowing approval
   if (decision === 'approved') {
     const verifiedRegTxn = db.prepare(`
       SELECT id, status FROM transactions
       WHERE user_id = ? AND fee_type = 'provider_registration' AND status = 'successful'
+      ORDER BY created_at DESC
       LIMIT 1
-    `).get(id);
+    `).get(targetId);
 
-    if (!provider.registration_fee_paid || (!verifiedRegTxn && provider.registration_payment_id)) {
+    if (!provider.registration_fee_paid || !verifiedRegTxn) {
       return NextResponse.json({
         error: 'Cannot approve provider application before the one-time registration fee payment is verified on the server.'
       }, { status: 400 });
+    }
+
+    if (!provider.registration_payment_id && verifiedRegTxn) {
+      db.prepare(`
+        UPDATE provider_profiles
+        SET registration_payment_id = ?, registration_fee_paid = 1
+        WHERE id = ?
+      `).run(verifiedRegTxn.id, targetId);
     }
   }
 
@@ -74,18 +88,18 @@ export async function POST(request, { params }) {
     auth.user.id,
     now,
     notes ? notes.trim() : null,
-    id
+    targetId
   );
 
   if (decision === 'approved') {
     // Only set user status to active if not manually suspended or subscription-suspended
     if (!provider.manual_suspended && !provider.subscription_suspended) {
-      db.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(id);
+      db.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(targetId);
     }
 
     // Ensure a provider_subscriptions row exists. If none exists yet, create it as 'pending'
     // so the provider must pay their first monthly subscription before public listing & bookings.
-    const existingSub = db.prepare('SELECT * FROM provider_subscriptions WHERE provider_id = ?').get(id);
+    const existingSub = db.prepare('SELECT * FROM provider_subscriptions WHERE provider_id = ?').get(targetId);
     if (!existingSub) {
       const subFee = getActiveFeeSetting('provider_subscription');
       db.prepare(`
@@ -94,7 +108,7 @@ export async function POST(request, { params }) {
         ) VALUES (?, ?, 'pending', ?, ?, 0, 5, ?, ?)
       `).run(
         `sub-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-        id,
+        targetId,
         subFee?.amount || 1500,
         subFee?.version || 1,
         now,
@@ -115,10 +129,10 @@ export async function POST(request, { params }) {
           suspended_by = ?,
           token_version = COALESCE(token_version, 1) + 1
       WHERE id = ?
-    `).run(notes.trim(), now, auth.user.id, notes.trim(), now, auth.user.id, id);
+    `).run(notes.trim(), now, auth.user.id, notes.trim(), now, auth.user.id, targetId);
 
     logAccountAction({
-      targetUserId: id,
+      targetUserId: targetId,
       targetUserName: provider.name,
       targetUserEmail: provider.email,
       targetUserRole: 'provider',
@@ -137,7 +151,7 @@ export async function POST(request, { params }) {
   let notifMessage = '';
 
   if (decision === 'approved') {
-    const subRow = db.prepare('SELECT status FROM provider_subscriptions WHERE provider_id = ?').get(id);
+    const subRow = db.prepare('SELECT status FROM provider_subscriptions WHERE provider_id = ?').get(targetId);
     const needsFirstSub = !subRow || subRow.status === 'pending';
     notifTitle = 'Provider Registration Approved!';
     notifMessage = needsFirstSub
@@ -155,12 +169,20 @@ export async function POST(request, { params }) {
   }
 
   createNotification(
-    id,
+    targetId,
     'verification',
     notifTitle,
     notifMessage,
     '/provider/dashboard'
   );
+
+  // Sync updated records to Supabase
+  try {
+    syncRowToSupabase(db, 'provider_profiles', targetId);
+    syncRowToSupabase(db, 'users', targetId);
+  } catch (syncErr) {
+    console.error('Supabase sync error on verification decision:', syncErr);
+  }
 
   return NextResponse.json({
     message: `Provider status updated to ${statusValue}.`,
